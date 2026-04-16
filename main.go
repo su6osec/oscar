@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -14,7 +15,6 @@ import (
 	"time"
 )
 
-// ANSI color codes for pretty CLI
 const (
 	Reset  = "\033[0m"
 	Red    = "\033[31m"
@@ -30,27 +30,31 @@ type Config struct {
 	Timeout     int
 	Silent      bool
 	Follow      bool
+	JSONOut     bool
+	VulnScan    bool
 	InputFile   string
 }
 
 type Result struct {
-	URL        string
-	StatusCode int
-	Title      string
-	Server     string
-	ContentLen int64
+	URL        string   `json:"url"`
+	StatusCode int      `json:"status_code"`
+	Title      string   `json:"title"`
+	Server     string   `json:"server"`
+	Tech       []string `json:"tech"`
+	Vulns      []string `json:"vulns,omitempty"`
+	ContentLen int64    `json:"content_length"`
 }
 
 func main() {
-	// Setup flags (short options)
 	var config Config
 	flag.IntVar(&config.Concurrency, "c", 50, "Concurrency level (number of workers)")
 	flag.IntVar(&config.Timeout, "t", 5, "Timeout in seconds")
 	flag.BoolVar(&config.Silent, "s", false, "Silent mode (only output live URLs)")
 	flag.BoolVar(&config.Follow, "r", false, "Follow redirects")
+	flag.BoolVar(&config.JSONOut, "j", false, "Output results in JSONL format")
+	flag.BoolVar(&config.VulnScan, "x", false, "Run lite vulnerability checks (.env, .git)")
 	flag.StringVar(&config.InputFile, "f", "", "Input file with domains (default: stdin)")
 
-	// Custom usage string
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "%sOSCAR - Open-Source Cyber Attack Reconnaissance%s\n", Cyan, Reset)
 		fmt.Fprintf(os.Stderr, "A blazing fast HTTP probing and reconnaissance tool.\n\n")
@@ -58,20 +62,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  cat domains.txt | oscar -c 100\n")
+		fmt.Fprintf(os.Stderr, "  cat domains.txt | oscar -c 100 -x -j\n")
 		fmt.Fprintf(os.Stderr, "  oscar -f targets.txt -s\n")
 	}
 
 	flag.Parse()
 
-	if !config.Silent {
+	if !config.Silent && !config.JSONOut {
 		fmt.Fprintf(os.Stderr, "%s[%s*%s]%s Starting OSCAR reconnaissance engine...\n", Blue, Reset, Blue, Reset)
 	}
 
 	targets := make(chan string)
 	var wg sync.WaitGroup
 
-	// Setup custom HTTP client
 	transport := &http.Transport{
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 		DisableKeepAlives: true,
@@ -87,7 +90,6 @@ func main() {
 		}
 	}
 
-	// Start workers
 	for i := 0; i < config.Concurrency; i++ {
 		wg.Add(1)
 		go func() {
@@ -98,7 +100,6 @@ func main() {
 		}()
 	}
 
-	// Read input
 	var scanner *bufio.Scanner
 	if config.InputFile != "" {
 		file, err := os.Open(config.InputFile)
@@ -109,17 +110,14 @@ func main() {
 		defer file.Close()
 		scanner = bufio.NewScanner(file)
 	} else {
-		// Read from stdin
 		stat, _ := os.Stdin.Stat()
 		if (stat.Mode() & os.ModeCharDevice) != 0 {
-			// Not piped
 			flag.Usage()
 			os.Exit(0)
 		}
 		scanner = bufio.NewScanner(os.Stdin)
 	}
 
-	// Feed workers
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line != "" {
@@ -136,7 +134,6 @@ func main() {
 	wg.Wait()
 }
 
-// titleRegex captures the text inside <title> tags
 var titleRegex = regexp.MustCompile(`(?i)<title>(.*?)</title>`)
 
 func probe(client *http.Client, url string, config *Config) {
@@ -144,9 +141,8 @@ func probe(client *http.Client, url string, config *Config) {
 	if err != nil {
 		return
 	}
-	req.Header.Set("User-Agent", "OSCAR Recon Engine / 1.0")
+	req.Header.Set("User-Agent", "OSCAR Recon Engine / 2.0")
 
-	// Pre-make the request to avoid keeping headers entirely in memory for long
 	resp, err := client.Do(req)
 	if err != nil {
 		return
@@ -157,10 +153,15 @@ func probe(client *http.Client, url string, config *Config) {
 		URL:        url,
 		StatusCode: resp.StatusCode,
 		Server:     resp.Header.Get("Server"),
+		Tech:       []string{},
+		Vulns:      []string{},
 	}
 
-	// Read up to 10KB of body to extract the title
-	body := make([]byte, 10240)
+	if poweredBy := resp.Header.Get("X-Powered-By"); poweredBy != "" {
+		res.Tech = append(res.Tech, poweredBy)
+	}
+
+	body := make([]byte, 15360)
 	n, _ := io.ReadFull(resp.Body, body)
 	res.ContentLen = int64(n)
 
@@ -169,10 +170,47 @@ func probe(client *http.Client, url string, config *Config) {
 		res.Title = strings.TrimSpace(string(matches[1]))
 	}
 
+	if config.VulnScan && res.StatusCode >= 200 && res.StatusCode < 400 {
+		runVulnChecks(client, url, &res)
+	}
+
 	displayResult(res, config)
 }
 
+func runVulnChecks(client *http.Client, base string, res *Result) {
+	endpoints := map[string]string{
+		"/.env":        "APP_ENV=",
+		"/.git/config": "[core]",
+	}
+
+	parsedBase := strings.TrimRight(base, "/")
+	for path, signature := range endpoints {
+		req, err := http.NewRequest("GET", parsedBase+path, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		
+		if resp.StatusCode == 200 {
+			bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+			if strings.Contains(string(bodyBytes), signature) {
+				res.Vulns = append(res.Vulns, "EXPOSED"+path)
+			}
+		}
+		resp.Body.Close()
+	}
+}
+
 func displayResult(res Result, config *Config) {
+	if config.JSONOut {
+		data, _ := json.Marshal(res)
+		fmt.Println(string(data))
+		return
+	}
+
 	if config.Silent {
 		fmt.Println(res.URL)
 		return
@@ -203,9 +241,18 @@ func displayResult(res Result, config *Config) {
 		}
 	}
 
-	fmt.Printf("%-35s [%s%d%s] [%s%-35s%s] [%s%-20s%s]\n",
+	extra := ""
+	if len(res.Tech) > 0 {
+		extra += fmt.Sprintf("[%v] ", res.Tech)
+	}
+	if len(res.Vulns) > 0 {
+		extra += fmt.Sprintf("%s[VULN: %v]%s ", Red, res.Vulns, Reset)
+	}
+
+	fmt.Printf("%-35s [%s%d%s] [%s%-35s%s] [%s%-20s%s] %s\n",
 		res.URL,
 		statusColor, res.StatusCode, Reset,
 		Cyan, title, Reset,
-		Purple, server, Reset)
+		Purple, server, Reset,
+		extra)
 }

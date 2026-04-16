@@ -35,6 +35,14 @@ Ramp up the concurrency with the `-c` flag for larger lists.
 cat subdomains.txt | oscar -c 100
 ```
 
+### Advanced V2 Features
+OSCAR now ships with an integrated Vulnerability Engine and JSON support!
+- **Vuln Scanning (`-x`)**: Automatically hunts for exposed `.env` and `.git/config` files on discovered live hosts!
+- **JSON Format (`-j`)**: Flawlessly pipes into CLI JSON parsers like `jq`.
+```bash
+cat targets.txt | oscar -x -j | jq .
+```
+
 ### Silent Mode
 Pipes out only live URLs to stdout, stripping the console formatting so you can pipe the output directly into other tools (like Nuclei) with the `-s` flag.
 ```bash
