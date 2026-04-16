@@ -2,12 +2,17 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -25,6 +30,17 @@ const (
 	Cyan   = "\033[36m"
 	Gray   = "\033[90m"
 	White  = "\033[97m"
+)
+
+var (
+	activeCmd     *exec.Cmd
+	lastSigint    time.Time
+	currentStep   int
+	targetDir     string
+	telegramToken string
+	telegramChat  string
+	slackURL      string
+	discordURL    string
 )
 
 var AutoInstallerArsenal = map[string]string{
@@ -103,9 +119,21 @@ func main() {
 	var update bool
 	var agent bool
 
+	var resumeTarget string
+	var tg string
+	var slack string
+	var discord string
+
 	// Omni-Flag Protocol (Short and Long variants)
 	flag.StringVar(&target, "t", "", "Target domain to pipeline (e.g. tesla.com)")
 	flag.StringVar(&target, "target", "", "Target domain to pipeline (e.g. tesla.com)")
+
+	flag.StringVar(&resumeTarget, "r", "", "Resume the mega-pipeline from the last recorded state for a domain")
+	flag.StringVar(&resumeTarget, "resume", "", "Resume the mega-pipeline")
+
+	flag.StringVar(&tg, "telegram", "", "Telegram credentials (token:chat_id)")
+	flag.StringVar(&slack, "slack", "", "Slack Webhook URL")
+	flag.StringVar(&discord, "discord", "", "Discord Webhook URL")
 
 	flag.StringVar(&bounty, "b", "", "Auto-Generate AI Reports for platform (hackerone, bugcrowd, intigriti)")
 	flag.StringVar(&bounty, "bounty", "", "Auto-Generate AI Reports for platform")
@@ -134,21 +162,37 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  %s%s[ Version: 2.0-ULTRA | Powered by Antigravity ]%s\n\n", Bold, Gray, Reset)
 
 		fmt.Fprintf(os.Stderr, "%s%sPIPELINE TARGETING%s\n", Bold, Green, Reset)
-		fmt.Fprintf(os.Stderr, "  %s-t, --target%s     <domain>  Target deployment (e.g. tesla.com)\n\n", Cyan, Reset)
+		fmt.Fprintf(os.Stderr, "  %s-t, --target%s     <domain>  Target deployment (e.g. tesla.com)\n", Cyan, Reset)
+		fmt.Fprintf(os.Stderr, "  %s-r, --resume%s     <domain>  Resume pipeline from last state\n\n", Cyan, Reset)
 
 		fmt.Fprintf(os.Stderr, "%s%sAI TRIAGE & EXPLOIT REPORTING%s\n", Bold, Green, Reset)
 		fmt.Fprintf(os.Stderr, "  %s-b, --bounty%s     <platform> Generate AI Reports (hackerone, bugcrowd)\n", Cyan, Reset)
 		fmt.Fprintf(os.Stderr, "  %s-f, --format%s     <ext>      Export format (md, txt, pdf)\n\n", Cyan, Reset)
+
+		fmt.Fprintf(os.Stderr, "%s%sNOTIFICATION ENGINE%s\n", Bold, Green, Reset)
+		fmt.Fprintf(os.Stderr, "  %s--telegram%s       <token:id> Send alerts via Telegram\n", Cyan, Reset)
+		fmt.Fprintf(os.Stderr, "  %s--slack%s          <url>      Send alerts via Slack Webhook\n", Cyan, Reset)
+		fmt.Fprintf(os.Stderr, "  %s--discord%s        <url>      Send alerts via Discord Webhook\n\n", Cyan, Reset)
 
 		fmt.Fprintf(os.Stderr, "%s%sSYSTEM UTILITIES%s\n", Bold, Green, Reset)
 		fmt.Fprintf(os.Stderr, "  %s-up, --update%s               Update pipelines & OSCAR binary\n", Cyan, Reset)
 		fmt.Fprintf(os.Stderr, "  %s-agent       %s               Initialize HexStrike AI MCP Server\n\n", Cyan, Reset)
 
 		fmt.Fprintf(os.Stderr, "%s%sEXECUTION EXAMPLES:%s\n", Bold, Purple, Reset)
-		fmt.Fprintf(os.Stderr, "  %soscar -t domain.com -b hackerone -f pdf%s\n", Gray, Reset)
-		fmt.Fprintf(os.Stderr, "  %soscar -agent%s\n\n", Gray, Reset)
+		fmt.Fprintf(os.Stderr, "  %soscar -t tesla.com -b hackerone --discord http://webhook.uri%s\n", Gray, Reset)
+		fmt.Fprintf(os.Stderr, "  %soscar -r tesla.com%s\n\n", Gray, Reset)
 	}
 	flag.Parse()
+
+	slackURL = slack
+	discordURL = discord
+	if tg != "" {
+		parts := strings.Split(tg, ":")
+		if len(parts) == 2 {
+			telegramToken = parts[0]
+			telegramChat = parts[1]
+		}
+	}
 
 	if agent {
 		home, _ := os.UserHomeDir()
@@ -182,6 +226,10 @@ func main() {
 		return
 	}
 
+	if target == "" && resumeTarget != "" {
+		target = resumeTarget
+	}
+
 	stat, _ := os.Stdin.Stat()
 	hasStdin := (stat.Mode() & os.ModeCharDevice) == 0
 
@@ -190,11 +238,94 @@ func main() {
 		os.Exit(0)
 	}
 
-	executeOrchestratedPipeline(target, bounty, format, hasStdin)
+	executeOrchestratedPipeline(target, bounty, format, hasStdin, resumeTarget != "")
 }
 
 
-func executeOrchestratedPipeline(target string, bounty string, format string, hasStdin bool) {
+func saveState(target string, step int) {
+	configPath := "resume.cfg"
+	if targetDir != "" {
+		configPath = filepath.Join(targetDir, "resume.cfg")
+	}
+	content := fmt.Sprintf("resume_from=%s\nindex=%d\n", target, step)
+	os.WriteFile(configPath, []byte(content), 0644)
+}
+
+func loadState(target string) int {
+	configPath := "resume.cfg"
+	if targetDir != "" {
+		configPath = filepath.Join(targetDir, "resume.cfg")
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return 0
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "index=") {
+			var idx int
+			fmt.Sscanf(line, "index=%d", &idx)
+			return idx
+		}
+	}
+	return 0
+}
+
+func sendNotification(message string) {
+	if slackURL != "" {
+		payload := map[string]string{"text": message}
+		jsonPayload, _ := json.Marshal(payload)
+		http.Post(slackURL, "application/json", bytes.NewBuffer(jsonPayload))
+	}
+	if discordURL != "" {
+		payload := map[string]string{"content": message}
+		jsonPayload, _ := json.Marshal(payload)
+		http.Post(discordURL, "application/json", bytes.NewBuffer(jsonPayload))
+	}
+	if telegramToken != "" && telegramChat != "" {
+		apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", telegramToken)
+		payload := map[string]string{"chat_id": telegramChat, "text": message}
+		jsonPayload, _ := json.Marshal(payload)
+		http.Post(apiURL, "application/json", bytes.NewBuffer(jsonPayload))
+	}
+}
+
+func executeOrchestratedPipeline(target string, bounty string, format string, hasStdin bool, resume bool) {
+	if target != "" {
+		targetDir = target
+		os.MkdirAll(targetDir, 0755)
+	}
+
+	startStep := 0
+	if resume {
+		startStep = loadState(target)
+		fmt.Fprintf(os.Stderr, "  %s[i]%s Resuming from step %d...\n", Cyan, Reset, startStep+1)
+	}
+
+	// Setup Signal Handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		for range sigChan {
+			if activeCmd != nil && activeCmd.Process != nil {
+				now := time.Now()
+				if now.Sub(lastSigint) < 2*time.Second {
+					fmt.Fprintf(os.Stderr, "\n%s[!] Double Ctrl+C detected. Saving state and exiting...%s\n", Red, Reset)
+					saveState(target, currentStep)
+					os.Exit(1)
+				}
+				lastSigint = now
+				fmt.Fprintf(os.Stderr, "\n%s[!] Ctrl+C detected. Skipping current tool...%s\n", Yellow, Reset)
+				activeCmd.Process.Signal(os.Interrupt)
+			} else {
+				fmt.Fprintf(os.Stderr, "\n%s[!] Exiting OSCAR...%s\n", Red, Reset)
+				os.Exit(0)
+			}
+		}
+	}()
+
+	sendNotification(fmt.Sprintf("🚀 OSCAR Pipeline Started: %s", target))
+
 	fmt.Fprintf(os.Stderr, "\n  %s%sOSCAR MEGA-PIPELINE%s %s[v2.0-ULTRA]%s\n", Bold, Purple, Reset, Gray, Reset)
 	if target != "" {
 		fmt.Fprintf(os.Stderr, "  %sTarget:%s  %s%s%s\n", Gray, Reset, Bold, target, Reset)
@@ -268,6 +399,8 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 	}
 
 	executeLive := func(cmd *exec.Cmd, outPath string, count *int) {
+		activeCmd = cmd
+		defer func() { activeCmd = nil }()
 		pipe, _ := cmd.StdoutPipe()
 		cmd.Start()
 		f, _ := os.Create(outPath)
@@ -275,7 +408,15 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 		scanner := bufio.NewScanner(pipe)
 		for scanner.Scan() {
 			*count++
-			f.WriteString(scanner.Text() + "\n")
+			line := scanner.Text()
+			f.WriteString(line + "\n")
+
+			// Live Goldmine Detection
+			if strings.Contains(strings.ToLower(line), "[medium]") ||
+				strings.Contains(strings.ToLower(line), "[high]") ||
+				strings.Contains(strings.ToLower(line), "[critical]") {
+				sendNotification(fmt.Sprintf("⚠️ GOLDMINE DETECTED in %s: %s", target, line))
+			}
 		}
 		cmd.Wait()
 	}
@@ -284,116 +425,156 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 	fmt.Fprintf(os.Stderr, "\n")
 	
 	// Step 1: Subfinder
+	currentStep = 0
+	subFile := filepath.Join(targetDir, "subs.txt")
+	if !hasStdin && target == "" {
+		subFile = "subs.txt"
+	}
 	var subCount int
-	done := startSpinner("Subfinder enumerating subdomains...", &subCount)
-	subFile := "./subs.txt"
-	subCmd := exec.Command(findTool("subfinder"), "-silent")
-	if !hasStdin { subCmd.Args = append(subCmd.Args, "-d", target) } else { subCmd.Stdin = os.Stdin }
-	executeLive(subCmd, subFile, &subCount)
-	done <- true
-	fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s domains mathematically mapped\n", Green, Reset, "Subfinder", Yellow, subCount, Reset)
+	if currentStep >= startStep {
+		done := startSpinner("Subfinder enumerating subdomains...", &subCount)
+		subCmd := exec.Command(findTool("subfinder"), "-silent")
+		if !hasStdin {
+			subCmd.Args = append(subCmd.Args, "-d", target)
+		} else {
+			subCmd.Stdin = os.Stdin
+		}
+		executeLive(subCmd, subFile, &subCount)
+		done <- true
+		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s domains mathematically mapped\n", Green, Reset, "Subfinder", Yellow, subCount, Reset)
+	}
 
 	// Step 2: Dnsx
+	currentStep = 1
+	dnsxFile := filepath.Join(targetDir, "dnsx.txt")
 	var dnsxCount int
-	done = startSpinner("Dnsx interrogating endpoints...", &dnsxCount)
-	dnsxFile := "./dnsx.txt"
-	runDnsx := exec.Command(findTool("dnsx"), "-silent", "-l", subFile)
-	executeLive(runDnsx, dnsxFile, &dnsxCount)
-	done <- true
-	fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s endpoints confirmed alive\n", Green, Reset, "Dnsx", Yellow, dnsxCount, Reset)
+	if currentStep >= startStep {
+		done := startSpinner("Dnsx interrogating endpoints...", &dnsxCount)
+		runDnsx := exec.Command(findTool("dnsx"), "-silent", "-l", subFile)
+		executeLive(runDnsx, dnsxFile, &dnsxCount)
+		done <- true
+		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s endpoints confirmed alive\n", Green, Reset, "Dnsx", Yellow, dnsxCount, Reset)
+	}
 
 	// Step 3: Naabu
+	currentStep = 2
+	naabuFile := filepath.Join(targetDir, "naabu.txt")
 	var naabuCount int
-	done = startSpinner("Naabu scanning perimeter ports...", &naabuCount)
-	naabuFile := "./naabu.txt"
-	runNaabu := exec.Command(findTool("naabu"), "-silent", "-top-ports", "100", "-l", dnsxFile)
-	executeLive(runNaabu, naabuFile, &naabuCount)
-	done <- true
-	fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s exposed ports discovered\n", Green, Reset, "Naabu", Yellow, naabuCount, Reset)
+	if currentStep >= startStep {
+		done := startSpinner("Naabu scanning perimeter ports...", &naabuCount)
+		runNaabu := exec.Command(findTool("naabu"), "-silent", "-top-ports", "100", "-l", dnsxFile)
+		executeLive(runNaabu, naabuFile, &naabuCount)
+		done <- true
+		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s exposed ports discovered\n", Green, Reset, "Naabu", Yellow, naabuCount, Reset)
+	}
 
 	// Step 4: Httpx
+	currentStep = 3
+	httpFile := filepath.Join(targetDir, "httpx.txt")
 	var httpCount int
-	done = startSpinner("Httpx abstracting vectors...", &httpCount)
-	httpFile := "./httpx.txt"
-	runHttp := exec.Command(findTool("httpx"), "-silent", "-tech-detect", "-l", naabuFile)
-	executeLive(runHttp, httpFile, &httpCount)
-	done <- true
-	fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s HTTP responses serialized\n", Green, Reset, "Httpx", Yellow, httpCount, Reset)
+	if currentStep >= startStep {
+		done := startSpinner("Httpx abstracting vectors...", &httpCount)
+		runHttp := exec.Command(findTool("httpx"), "-silent", "-tech-detect", "-l", naabuFile)
+		executeLive(runHttp, httpFile, &httpCount)
+		done <- true
+		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s HTTP responses serialized\n", Green, Reset, "Httpx", Yellow, httpCount, Reset)
+	}
 
 	// Step 5: GAU
+	currentStep = 4
+	gauFile := filepath.Join(targetDir, "gau.txt")
 	var gauCount int
-	done = startSpinner("GAU parsing historical archives...", &gauCount)
-	gauFile := "./gau.txt"
-	runGau := exec.Command(findTool("gau"), "--threads", "10", "--subs")
-	runGau.Stdin, _ = os.Open(subFile)
-	executeLive(runGau, gauFile, &gauCount)
-	done <- true
-	fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s historical URLs extracted\n", Green, Reset, "GAU", Yellow, gauCount, Reset)
+	if currentStep >= startStep {
+		done := startSpinner("GAU parsing historical archives...", &gauCount)
+		runGau := exec.Command(findTool("gau"), "--threads", "10", "--subs")
+		runGau.Stdin, _ = os.Open(subFile)
+		executeLive(runGau, gauFile, &gauCount)
+		done <- true
+		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s historical URLs extracted\n", Green, Reset, "GAU", Yellow, gauCount, Reset)
+	}
 
 	// Step 6: Katana
+	currentStep = 5
+	katanaFile := filepath.Join(targetDir, "katana.txt")
 	var katanaCount int
-	done = startSpinner("Katana aggressively crawling architectures...", &katanaCount)
-	katanaFile := "./katana.txt"
-	runKatana := exec.Command(findTool("katana"), "-silent", "-list", httpFile)
-	executeLive(runKatana, katanaFile, &katanaCount)
-	done <- true
-	fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s deep URLs extracted natively\n", Green, Reset, "Katana", Yellow, katanaCount, Reset)
+	if currentStep >= startStep {
+		done := startSpinner("Katana aggressively crawling architectures...", &katanaCount)
+		runKatana := exec.Command(findTool("katana"), "-silent", "-list", httpFile)
+		executeLive(runKatana, katanaFile, &katanaCount)
+		done <- true
+		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s deep URLs extracted natively\n", Green, Reset, "Katana", Yellow, katanaCount, Reset)
+	}
 
 	// Step 7: Javascript Extractor
+	currentStep = 6
+	jsFile := filepath.Join(targetDir, "javascript.txt")
 	var jsCount int
-	done = startSpinner("Filtering Javascript Endpoint Arrays...", &jsCount)
-	jsFile := "./javascript.txt"
-	jsMap := make(map[string]bool)
-	fJS, _ := os.Create(jsFile)
-	
-	processJSFile := func(filename string) {
-		f, err := os.Open(filename)
-		if err != nil { return }
-		defer f.Close()
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.HasSuffix(line, ".js") && !jsMap[line] {
-				jsMap[line] = true
-				fJS.WriteString(line + "\n")
-				jsCount++
+	if currentStep >= startStep {
+		done := startSpinner("Filtering Javascript Endpoint Arrays...", &jsCount)
+		jsMap := make(map[string]bool)
+		fJS, _ := os.Create(jsFile)
+
+		processJSFile := func(filename string) {
+			f, err := os.Open(filename)
+			if err != nil {
+				return
+			}
+			defer f.Close()
+			scanner := bufio.NewScanner(f)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if strings.HasSuffix(line, ".js") && !jsMap[line] {
+					jsMap[line] = true
+					fJS.WriteString(line + "\n")
+					jsCount++
+				}
 			}
 		}
+		processJSFile(gauFile)
+		processJSFile(katanaFile)
+		fJS.Close()
+		done <- true
+		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s pure .js logic files strictly isolated\n", Green, Reset, "JS Engine", Yellow, jsCount, Reset)
 	}
-	processJSFile(gauFile)
-	processJSFile(katanaFile)
-	fJS.Close()
-	done <- true
-	fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s pure .js logic files strictly isolated\n", Green, Reset, "JS Engine", Yellow, jsCount, Reset)
 
 	// Step 8: Nuclei
+	currentStep = 7
+	nucleiFile := filepath.Join(targetDir, "nuclei.txt")
 	var nucleiCount int
-	done = startSpinner("Nuclei executing Zero-Day payloads...", &nucleiCount)
-	nucleiFile := "./nuclei.txt"
-	runNuclei := exec.Command(findTool("nuclei"), "-silent", "-l", katanaFile)
-	executeLive(runNuclei, nucleiFile, &nucleiCount)
-	done <- true
-	fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s vulnerabilities confirmed natively\n", Green, Reset, "Nuclei", Yellow, nucleiCount, Reset)
+	if currentStep >= startStep {
+		done := startSpinner("Nuclei executing Zero-Day payloads...", &nucleiCount)
+		runNuclei := exec.Command(findTool("nuclei"), "-silent", "-l", katanaFile)
+		executeLive(runNuclei, nucleiFile, &nucleiCount)
+		done <- true
+		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s vulnerabilities confirmed natively\n", Green, Reset, "Nuclei", Yellow, nucleiCount, Reset)
+	}
 
 	// Step 9: Ffuf
+	currentStep = 8
+	ffufFile := filepath.Join(targetDir, "ffuf.json")
 	var ffufCount int
-	done = startSpinner("Ffuf aggressively fuzzing live directories...", &ffufCount)
-	ffufFile := "./ffuf.json"
-	wordlist := filepath.Join(secListsPath, "Discovery", "Web-Content", "raft-large-directories.txt")
-	runFfuf := exec.Command(findTool("ffuf"), "-silent", "-w", httpFile+":URL", "-w", wordlist+":PATH", "-u", "URL/PATH", "-mc", "200", "-o", ffufFile)
-	executeLive(runFfuf, ffufFile, &ffufCount)
-	done <- true
-	fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s active directories mapped organically\n", Green, Reset, "Ffuf", Yellow, ffufCount, Reset)
+	if currentStep >= startStep {
+		done := startSpinner("Ffuf aggressively fuzzing live directories...", &ffufCount)
+		wordlist := filepath.Join(secListsPath, "Discovery", "Web-Content", "raft-large-directories.txt")
+		runFfuf := exec.Command(findTool("ffuf"), "-silent", "-w", httpFile+":URL", "-w", wordlist+":PATH", "-u", "URL/PATH", "-mc", "200", "-o", ffufFile)
+		executeLive(runFfuf, ffufFile, &ffufCount)
+		done <- true
+		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s active directories mapped organically\n", Green, Reset, "Ffuf", Yellow, ffufCount, Reset)
+	}
 
 	// Step 10: Nuclei Javascript Exposures
+	currentStep = 9
+	jsNucleiFile := filepath.Join(targetDir, "nuclei_js.txt")
 	var jsNucleiCount int
-	done = startSpinner("Nuclei hunting hardcoded secrets inside JavaScript...", &jsNucleiCount)
-	jsNucleiFile := "./nuclei_js.txt"
-	runJSNuclei := exec.Command(findTool("nuclei"), "-silent", "-l", jsFile, "-tags", "exposure,token,config")
-	executeLive(runJSNuclei, jsNucleiFile, &jsNucleiCount)
-	done <- true
-	fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s API Keys & Exposures confirmed natively\n", Green, Reset, "Nuclei JS", Yellow, jsNucleiCount, Reset)
+	if currentStep >= startStep {
+		done := startSpinner("Nuclei hunting hardcoded secrets inside JavaScript...", &jsNucleiCount)
+		runJSNuclei := exec.Command(findTool("nuclei"), "-silent", "-l", jsFile, "-tags", "exposure,token,config")
+		executeLive(runJSNuclei, jsNucleiFile, &jsNucleiCount)
+		done <- true
+		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s API Keys & Exposures confirmed natively\n", Green, Reset, "Nuclei JS", Yellow, jsNucleiCount, Reset)
+	}
 
+	sendNotification(fmt.Sprintf("🏁 OSCAR Pipeline Complete for %s", target))
 	fmt.Fprintf(os.Stderr, "\n  %s%s=== MEGA-PIPELINE STREAM COMPLETE ===%s\n", Bold, Green, Reset)
 
 	// Phase C: If Bounty Flag is provided, Trigger AI Writeup Engine
