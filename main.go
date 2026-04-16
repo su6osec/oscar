@@ -30,7 +30,24 @@ const (
 	Cyan   = "\033[36m"
 	Gray   = "\033[90m"
 	White  = "\033[97m"
+	Pink   = "\033[38;5;206m"
+	Orange = "\033[38;5;208m"
 )
+
+func printGradient(text string) {
+	colors := []string{"\033[38;5;129m", "\033[38;5;128m", "\033[38;5;127m", "\033[38;5;126m", "\033[38;5;125m", "\033[38;5;124m"}
+	for i, r := range text {
+		fmt.Fprintf(os.Stderr, "%s%c", colors[i%len(colors)], r)
+	}
+	fmt.Fprint(os.Stderr, Reset)
+}
+
+func typewrite(text string, delay time.Duration) {
+	for _, r := range text {
+		fmt.Fprintf(os.Stderr, "%c", r)
+		time.Sleep(delay)
+	}
+}
 
 var (
 	activeCmd     *exec.Cmd
@@ -150,37 +167,40 @@ func main() {
 	InitDB("./oscar.db")
 
 	flag.Usage = func() {
-		banner := `
-  %s██████  ███████  ██████  █████  ██████  
- ██    ██ ██      ██      ██   ██ ██   ██ 
- ██    ██ ███████ ██      ███████ ██████  
- ██    ██      ██ ██      ██   ██ ██   ██ 
-  ██████  ███████  ██████ ██   ██ ██   ██%s
-`
-		fmt.Fprintf(os.Stderr, banner, Purple, Reset)
-		fmt.Fprintf(os.Stderr, "  %s%s[ OSCAR: Open-Source Cyber Attack Reconnaissance ]%s\n", Bold, Cyan, Reset)
-		fmt.Fprintf(os.Stderr, "  %s%s[ Version: 1.0.0-ULTRA | Powered by Antigravity ]%s\n\n", Bold, Gray, Reset)
+		fmt.Fprintf(os.Stderr, "\n")
+		printGradient("  ██████  ███████  ██████  █████  ██████  ")
+		fmt.Fprintf(os.Stderr, "\n")
+		printGradient(" ██    ██ ██      ██      ██   ██ ██   ██ ")
+		fmt.Fprintf(os.Stderr, "\n")
+		printGradient(" ██    ██ ███████ ██      ███████ ██████  ")
+		fmt.Fprintf(os.Stderr, "\n")
+		printGradient(" ██    ██      ██ ██      ██   ██ ██   ██ ")
+		fmt.Fprintf(os.Stderr, "\n")
+		printGradient("  ██████  ███████  ██████ ██   ██ ██   ██ ")
+		fmt.Fprintf(os.Stderr, "\n\n")
 
-		fmt.Fprintf(os.Stderr, "%s%sPIPELINE TARGETING%s\n", Bold, Green, Reset)
-		fmt.Fprintf(os.Stderr, "  %s-t, --target%s     <domain>  Target deployment (e.g. tesla.com)\n", Cyan, Reset)
-		fmt.Fprintf(os.Stderr, "  %s-r, --resume%s     <domain>  Resume pipeline from last state\n\n", Cyan, Reset)
+		fmt.Fprintf(os.Stderr, "  %s%s✨ OSCAR: Open-Source Cyber Attack Reconnaissance ✨%s\n", Bold, Cyan, Reset)
+		fmt.Fprintf(os.Stderr, "  %s%s[ v1.0.0-ULTRA | The Antigravity Recon Engine ]%s\n\n", Bold, Gray, Reset)
 
-		fmt.Fprintf(os.Stderr, "%s%sAI TRIAGE & EXPLOIT REPORTING%s\n", Bold, Green, Reset)
-		fmt.Fprintf(os.Stderr, "  %s-b, --bounty%s     <platform> Generate AI Reports (hackerone, bugcrowd)\n", Cyan, Reset)
-		fmt.Fprintf(os.Stderr, "  %s-f, --format%s     <ext>      Export format (md, txt, pdf)\n\n", Cyan, Reset)
+		fmt.Fprintf(os.Stderr, "  %s%s┌── Pipeline Controls ──────────────────────────────────┐%s\n", Bold, Purple, Reset)
+		fmt.Fprintf(os.Stderr, "  %s│%s  %s-t, --target%s     <domain>  Target deployment       %s│%s\n", Purple, Reset, Cyan, Reset, Purple, Reset)
+		fmt.Fprintf(os.Stderr, "  %s│%s  %s-r, --resume%s     <domain>  Resume last state       %s│%s\n", Purple, Reset, Cyan, Reset, Purple, Reset)
+		fmt.Fprintf(os.Stderr, "  %s└────────────────────────────────────────────────────────┘%s\n\n", Purple, Reset)
 
-		fmt.Fprintf(os.Stderr, "%s%sNOTIFICATION ENGINE%s\n", Bold, Green, Reset)
-		fmt.Fprintf(os.Stderr, "  %s--telegram%s       <token:id> Send alerts via Telegram\n", Cyan, Reset)
-		fmt.Fprintf(os.Stderr, "  %s--slack%s          <url>      Send alerts via Slack Webhook\n", Cyan, Reset)
-		fmt.Fprintf(os.Stderr, "  %s--discord%s        <url>      Send alerts via Discord Webhook\n\n", Cyan, Reset)
+		fmt.Fprintf(os.Stderr, "  %s%s┌── AI & Reporting ──────────────────────────────────────┐%s\n", Bold, Green, Reset)
+		fmt.Fprintf(os.Stderr, "  %s│%s  %s-b, --bounty%s     <platform> Generate AI Reports     %s│%s\n", Green, Reset, Cyan, Reset, Green, Reset)
+		fmt.Fprintf(os.Stderr, "  %s│%s  %s-f, --format%s     <ext>      Export format (pdf/md) %s│%s\n", Green, Reset, Cyan, Reset, Green, Reset)
+		fmt.Fprintf(os.Stderr, "  %s└────────────────────────────────────────────────────────┘%s\n\n", Green, Reset)
 
-		fmt.Fprintf(os.Stderr, "%s%sSYSTEM UTILITIES%s\n", Bold, Green, Reset)
-		fmt.Fprintf(os.Stderr, "  %s-up, --update%s               Update pipelines & OSCAR binary\n", Cyan, Reset)
-		fmt.Fprintf(os.Stderr, "  %s-agent       %s               Initialize HexStrike AI MCP Server\n\n", Cyan, Reset)
+		fmt.Fprintf(os.Stderr, "  %s%s┌── Notifications ───────────────────────────────────────┐%s\n", Bold, Yellow, Reset)
+		fmt.Fprintf(os.Stderr, "  %s│%s  %s--telegram%s       <token:id> Discord-style alerts    %s│%s\n", Yellow, Reset, Cyan, Reset, Yellow, Reset)
+		fmt.Fprintf(os.Stderr, "  %s│%s  %s--slack%s          <url>      Slack Webhook alerts    %s│%s\n", Yellow, Reset, Cyan, Reset, Yellow, Reset)
+		fmt.Fprintf(os.Stderr, "  %s│%s  %s--discord%s        <url>      Discord Webhook alerts  %s│%s\n", Yellow, Reset, Cyan, Reset, Yellow, Reset)
+		fmt.Fprintf(os.Stderr, "  %s└────────────────────────────────────────────────────────┘%s\n\n", Yellow, Reset)
 
-		fmt.Fprintf(os.Stderr, "%s%sEXECUTION EXAMPLES:%s\n", Bold, Purple, Reset)
-		fmt.Fprintf(os.Stderr, "  %soscar -t tesla.com -b hackerone --discord http://webhook.uri%s\n", Gray, Reset)
-		fmt.Fprintf(os.Stderr, "  %soscar -r tesla.com%s\n\n", Gray, Reset)
+		fmt.Fprintf(os.Stderr, "  %s%sEXECUTION EXAMPLES:%s\n", Bold, White, Reset)
+		fmt.Fprintf(os.Stderr, "  %s»%s %soscar -t tesla.com -b hackerone --discord http://webhook.uri%s\n", Pink, Reset, Gray, Reset)
+		fmt.Fprintf(os.Stderr, "  %s»%s %soscar -r tesla.com%s\n\n", Pink, Reset, Gray, Reset)
 	}
 	flag.Parse()
 
@@ -326,13 +346,17 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 
 	sendNotification(fmt.Sprintf("🚀 OSCAR Pipeline Started: %s", target))
 
-	fmt.Fprintf(os.Stderr, "\n  %s%sOSCAR MEGA-PIPELINE%s %s[v1.0.0-ULTRA]%s\n", Bold, Purple, Reset, Gray, Reset)
+	fmt.Fprintf(os.Stderr, "\n")
+	printGradient("  ✨ OSCAR MEGA-PIPELINE [v1.0.0-ULTRA] ✨")
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  %s┌────────────────────────────────────────────────────────┐%s\n", Gray, Reset)
 	if target != "" {
-		fmt.Fprintf(os.Stderr, "  %sTarget:%s  %s%s%s\n", Gray, Reset, Bold, target, Reset)
+		fmt.Fprintf(os.Stderr, "  %s│%s  %sTarget:%s  %-40s  %s│%s\n", Gray, Reset, Bold, Reset, target, Gray, Reset)
 	} else {
-		fmt.Fprintf(os.Stderr, "  %sTarget:%s  %s[STDIN]%s\n", Gray, Reset, Yellow, Reset)
+		fmt.Fprintf(os.Stderr, "  %s│%s  %sTarget:%s  %-40s  %s│%s\n", Gray, Reset, Bold, Reset, "[STDIN]", Gray, Reset)
 	}
-	fmt.Fprintf(os.Stderr, "  %sStatus:%s  %sRUNNING%s\n\n", Gray, Reset, Green, Reset)
+	fmt.Fprintf(os.Stderr, "  %s│%s  %sStatus:%s  %s%-40s%s  %s│%s\n", Gray, Reset, Bold, Reset, Green, "ACTIVE MISSION", Reset, Gray, Reset)
+	fmt.Fprintf(os.Stderr, "  %s└────────────────────────────────────────────────────────┘%s\n\n", Gray, Reset)
 
 	coreTools := []string{"subfinder", "dnsx", "naabu", "httpx", "gau", "katana", "nuclei", "ffuf"}
 
@@ -381,7 +405,9 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 	startSpinner := func(message string, count *int) chan bool {
 		done := make(chan bool)
 		go func() {
-			frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+			frames := []string{
+				"ฅ^•ﻌ•^ฅ", "ฅ^•. •^ฅ", "ฅ^• ω •^ฅ", "ฅ^•ﻌ•^ฅ", "ฅ^•  •^ฅ",
+			}
 			i := 0
 			for {
 				select {
@@ -389,9 +415,9 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 					fmt.Fprintf(os.Stderr, "\r\033[K") // Clear line natively
 					return
 				default:
-					fmt.Fprintf(os.Stderr, "\r  %s[%s]%s %-40s %s[%d]%s", Cyan, frames[i], Reset, message, Yellow, *count, Reset)
-					i = (i + 1) % len(frames)
-					time.Sleep(80 * time.Millisecond)
+					fmt.Fprintf(os.Stderr, "\r  %s%s%s %-40s %s[%d]%s", Pink, frames[i%len(frames)], Reset, message, Yellow, *count, Reset)
+					i++
+					time.Sleep(150 * time.Millisecond)
 				}
 			}
 		}()
@@ -424,6 +450,10 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 	// Sequential Execution Routines
 	fmt.Fprintf(os.Stderr, "\n")
 	
+	printSuccess := func(tool, msg string, count int) {
+		fmt.Fprintf(os.Stderr, "  %s✨%s %s%-15s%s %s%d%s %s%s%s\n", Pink, Reset, Bold, tool, Reset, Yellow, count, Reset, Gray, msg, Reset)
+	}
+
 	// Step 1: Subfinder
 	currentStep = 0
 	subFile := filepath.Join(targetDir, "subs.txt")
@@ -432,7 +462,7 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 	}
 	var subCount int
 	if currentStep >= startStep {
-		done := startSpinner("Subfinder enumerating subdomains...", &subCount)
+		done := startSpinner("Subfinder scanning sub-domains...", &subCount)
 		subCmd := exec.Command(findTool("subfinder"), "-silent")
 		if !hasStdin {
 			subCmd.Args = append(subCmd.Args, "-d", target)
@@ -441,7 +471,7 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 		}
 		executeLive(subCmd, subFile, &subCount)
 		done <- true
-		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s domains mathematically mapped\n", Green, Reset, "Subfinder", Yellow, subCount, Reset)
+		printSuccess("Subfinder", "domains mathematically mapped", subCount)
 	}
 
 	// Step 2: Dnsx
@@ -453,7 +483,7 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 		runDnsx := exec.Command(findTool("dnsx"), "-silent", "-l", subFile)
 		executeLive(runDnsx, dnsxFile, &dnsxCount)
 		done <- true
-		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s endpoints confirmed alive\n", Green, Reset, "Dnsx", Yellow, dnsxCount, Reset)
+		printSuccess("Dnsx", "endpoints confirmed alive", dnsxCount)
 	}
 
 	// Step 3: Naabu
@@ -465,7 +495,7 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 		runNaabu := exec.Command(findTool("naabu"), "-silent", "-top-ports", "100", "-l", dnsxFile)
 		executeLive(runNaabu, naabuFile, &naabuCount)
 		done <- true
-		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s exposed ports discovered\n", Green, Reset, "Naabu", Yellow, naabuCount, Reset)
+		printSuccess("Naabu", "exposed ports discovered", naabuCount)
 	}
 
 	// Step 4: Httpx
@@ -477,7 +507,7 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 		runHttp := exec.Command(findTool("httpx"), "-silent", "-tech-detect", "-l", naabuFile)
 		executeLive(runHttp, httpFile, &httpCount)
 		done <- true
-		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s HTTP responses serialized\n", Green, Reset, "Httpx", Yellow, httpCount, Reset)
+		printSuccess("Httpx", "HTTP responses serialized", httpCount)
 	}
 
 	// Step 5: GAU
@@ -490,7 +520,7 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 		runGau.Stdin, _ = os.Open(subFile)
 		executeLive(runGau, gauFile, &gauCount)
 		done <- true
-		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s historical URLs extracted\n", Green, Reset, "GAU", Yellow, gauCount, Reset)
+		printSuccess("GAU", "historical URLs extracted", gauCount)
 	}
 
 	// Step 6: Katana
@@ -498,11 +528,11 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 	katanaFile := filepath.Join(targetDir, "katana.txt")
 	var katanaCount int
 	if currentStep >= startStep {
-		done := startSpinner("Katana aggressively crawling architectures...", &katanaCount)
+		done := startSpinner("Katana aggressively crawling...", &katanaCount)
 		runKatana := exec.Command(findTool("katana"), "-silent", "-list", httpFile)
 		executeLive(runKatana, katanaFile, &katanaCount)
 		done <- true
-		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s deep URLs extracted natively\n", Green, Reset, "Katana", Yellow, katanaCount, Reset)
+		printSuccess("Katana", "deep URLs extracted natively", katanaCount)
 	}
 
 	// Step 7: Javascript Extractor
@@ -534,7 +564,7 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 		processJSFile(katanaFile)
 		fJS.Close()
 		done <- true
-		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s pure .js logic files strictly isolated\n", Green, Reset, "JS Engine", Yellow, jsCount, Reset)
+		printSuccess("JS Engine", "pure .js logic files strictly isolated", jsCount)
 	}
 
 	// Step 8: Nuclei
@@ -546,7 +576,7 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 		runNuclei := exec.Command(findTool("nuclei"), "-silent", "-l", katanaFile)
 		executeLive(runNuclei, nucleiFile, &nucleiCount)
 		done <- true
-		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s vulnerabilities confirmed natively\n", Green, Reset, "Nuclei", Yellow, nucleiCount, Reset)
+		printSuccess("Nuclei", "vulnerabilities confirmed natively", nucleiCount)
 	}
 
 	// Step 9: Ffuf
@@ -554,12 +584,12 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 	ffufFile := filepath.Join(targetDir, "ffuf.json")
 	var ffufCount int
 	if currentStep >= startStep {
-		done := startSpinner("Ffuf aggressively fuzzing live directories...", &ffufCount)
+		done := startSpinner("Ffuf aggressively fuzzing directories...", &ffufCount)
 		wordlist := filepath.Join(secListsPath, "Discovery", "Web-Content", "raft-large-directories.txt")
 		runFfuf := exec.Command(findTool("ffuf"), "-silent", "-w", httpFile+":URL", "-w", wordlist+":PATH", "-u", "URL/PATH", "-mc", "200", "-o", ffufFile)
 		executeLive(runFfuf, ffufFile, &ffufCount)
 		done <- true
-		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s active directories mapped organically\n", Green, Reset, "Ffuf", Yellow, ffufCount, Reset)
+		printSuccess("Ffuf", "active directories mapped organically", ffufCount)
 	}
 
 	// Step 10: Nuclei Javascript Exposures
@@ -567,15 +597,17 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 	jsNucleiFile := filepath.Join(targetDir, "nuclei_js.txt")
 	var jsNucleiCount int
 	if currentStep >= startStep {
-		done := startSpinner("Nuclei hunting hardcoded secrets inside JavaScript...", &jsNucleiCount)
+		done := startSpinner("Nuclei hunting secrets in JS...", &jsNucleiCount)
 		runJSNuclei := exec.Command(findTool("nuclei"), "-silent", "-l", jsFile, "-tags", "exposure,token,config")
 		executeLive(runJSNuclei, jsNucleiFile, &jsNucleiCount)
 		done <- true
-		fmt.Fprintf(os.Stderr, "  %s[✔]%s %-15s %s%d%s API Keys & Exposures confirmed natively\n", Green, Reset, "Nuclei JS", Yellow, jsNucleiCount, Reset)
+		printSuccess("Nuclei JS", "API Keys & Exposures confirmed", jsNucleiCount)
 	}
 
 	sendNotification(fmt.Sprintf("🏁 OSCAR Pipeline Complete for %s", target))
-	fmt.Fprintf(os.Stderr, "\n  %s%s=== MEGA-PIPELINE STREAM COMPLETE ===%s\n", Bold, Green, Reset)
+	fmt.Fprintf(os.Stderr, "\n")
+	printGradient("  💖 MISSION ACCOMPLISHED — OSCAR EVOLVED 💖")
+	fmt.Fprintf(os.Stderr, "\n\n")
 
 	// Phase C: If Bounty Flag is provided, Trigger AI Writeup Engine
 	if bounty != "" {
