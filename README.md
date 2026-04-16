@@ -1,9 +1,9 @@
-# ⚡ OSCAR v2.0-ULTRA ⚡
+# ⚡ OSCAR v1.0.0-ULTRA ⚡
 ### Open-Source Cyber Attack Reconnaissance & Mega-Pipeline
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/su6osec/oscar)](https://goreportcard.com/report/github.com/su6osec/oscar)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/Version-2.0--ULTRA-blueviolet)]()
+[![Version](https://img.shields.io/badge/Version-1.0.0--ULTRA-blueviolet)]()
 
 OSCAR is an advanced, orchestrated reconnaissance engine designed for elite bug bounty hunters and red teamers. It mathematically maps target architectures, serializes HTTP responses, and executes zero-day payloads through a high-performance mega-pipeline.
 
@@ -26,12 +26,8 @@ OSCAR is an advanced, orchestrated reconnaissance engine designed for elite bug 
 ## 🛠 Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/su6osec/oscar.git
-cd oscar
-
-# Build the binary
-go build -o oscar main.go ai.go db.go
+# Install directly using Go
+go install -v github.com/su6osec/oscar@latest
 ```
 
 *Note: OSCAR will automatically provision missing dependencies from the ProjectDiscovery and tomnomnom arsenals on its first run.*
@@ -42,17 +38,17 @@ go build -o oscar main.go ai.go db.go
 
 ### Full Recon with Live Discord Alerts
 ```bash
-./oscar -t tesla.com -b hackerone --discord https://discord.com/api/webhooks/...
+oscar -t tesla.com -b hackerone --discord https://discord.com/api/webhooks/...
 ```
 
 ### Resuming a Paused Pipeline
 ```bash
-./oscar -r tesla.com
+oscar -r tesla.com
 ```
 
 ### Agentic Mode (HexStrike AI Integration)
 ```bash
-./oscar -agent
+oscar -agent
 ```
 
 ---

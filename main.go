@@ -159,7 +159,7 @@ func main() {
 `
 		fmt.Fprintf(os.Stderr, banner, Purple, Reset)
 		fmt.Fprintf(os.Stderr, "  %s%s[ OSCAR: Open-Source Cyber Attack Reconnaissance ]%s\n", Bold, Cyan, Reset)
-		fmt.Fprintf(os.Stderr, "  %s%s[ Version: 2.0-ULTRA | Powered by Antigravity ]%s\n\n", Bold, Gray, Reset)
+		fmt.Fprintf(os.Stderr, "  %s%s[ Version: 1.0.0-ULTRA | Powered by Antigravity ]%s\n\n", Bold, Gray, Reset)
 
 		fmt.Fprintf(os.Stderr, "%s%sPIPELINE TARGETING%s\n", Bold, Green, Reset)
 		fmt.Fprintf(os.Stderr, "  %s-t, --target%s     <domain>  Target deployment (e.g. tesla.com)\n", Cyan, Reset)
@@ -326,7 +326,7 @@ func executeOrchestratedPipeline(target string, bounty string, format string, ha
 
 	sendNotification(fmt.Sprintf("🚀 OSCAR Pipeline Started: %s", target))
 
-	fmt.Fprintf(os.Stderr, "\n  %s%sOSCAR MEGA-PIPELINE%s %s[v2.0-ULTRA]%s\n", Bold, Purple, Reset, Gray, Reset)
+	fmt.Fprintf(os.Stderr, "\n  %s%sOSCAR MEGA-PIPELINE%s %s[v1.0.0-ULTRA]%s\n", Bold, Purple, Reset, Gray, Reset)
 	if target != "" {
 		fmt.Fprintf(os.Stderr, "  %sTarget:%s  %s%s%s\n", Gray, Reset, Bold, target, Reset)
 	} else {
