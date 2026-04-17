@@ -10,7 +10,7 @@
   <b>OSCAR</b>
 </h1>
 
-<h4 align="center">Omni-Signal Capture &amp; Agentic Recon — v2.0.0</h4>
+<h4 align="center">Omni-Signal Capture &amp; Agentic Recon — v1.0.0</h4>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Language-Go-00ADD8?logo=go&logoColor=white">
@@ -137,7 +137,7 @@ oscar -up
 
 ```bash
 oscar -v
-# OSCAR v2.0.0
+# OSCAR v1.0.0
 ```
 
 ---
@@ -265,7 +265,7 @@ Stage 5 ── Vulnerability Analysis  (parallel)
 
 ## Live UI
 
-OSCAR v2.0 features a fully animated terminal interface:
+OSCAR v1.0.0 features a fully animated terminal interface:
 
 ```
   ▶  Stage 1/5  ·  Passive Discovery  (parallel)
