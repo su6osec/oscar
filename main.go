@@ -1,558 +1,190 @@
 package main
 
 import (
-	"bufio"
-	"encoding/json"
+	"context"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"strings"
-	"sync"
 	"syscall"
-	"time"
 
-	"github.com/johnfercher/maroto/pkg/color"
-	"github.com/johnfercher/maroto/pkg/consts"
-	"github.com/johnfercher/maroto/pkg/pdf"
-	"github.com/johnfercher/maroto/pkg/props"
 	"github.com/pterm/pterm"
 )
 
-// ANSI Colored Terminal Escape Codes
-const (
-	Reset  = "\033[0m"
-	Bold   = "\033[1m"
-	Red    = "\033[31m"
-	Green  = "\033[32m"
-	Yellow = "\033[33m"
-	Blue   = "\033[34m"
-	Purple = "\033[35m"
-	Cyan   = "\033[36m"
-	Gray   = "\033[90m"
-	White  = "\033[97m"
-	Pink   = "\033[38;5;206m"
-)
-
-type ExecutionState struct {
-	Completed map[string]bool `json:"completed"`
-}
-
-var (
-	target         string
-	update         bool
-	agent          bool
-	bounty         string
-	format         string
-	targetDir      string
-	binPath        string
-	stateFile      string
-	state          ExecutionState
-	activeCmd      *exec.Cmd
-	cmdMutex       sync.Mutex
-	lastSigint     time.Time
-)
-
-var AutoInstallerArsenal = map[string]string{
-	"subfinder":   "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
-	"dnsx":        "github.com/projectdiscovery/dnsx/cmd/dnsx@latest",
-	"naabu":       "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest",
-	"httpx":       "github.com/projectdiscovery/httpx/cmd/httpx@latest",
-	"katana":      "github.com/projectdiscovery/katana/cmd/katana@latest",
-	"nuclei":      "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
-	"gau":         "github.com/lc/gau/v2/cmd/gau@latest",
-	"ffuf":        "github.com/ffuf/ffuf/v2@latest",
-	"dalfox":      "github.com/hahwul/dalfox/v2@latest",
-	"crlfuzz":     "github.com/dwisiswant0/crlfuzz/cmd/crlfuzz@latest",
-	"kxss":        "github.com/tomnomnom/hacks/kxss@latest",
-	"qsreplace":   "github.com/tomnomnom/qsreplace@latest",
-	"hakrawler":   "github.com/hakluke/hakrawler@latest",
-	"assetfinder": "github.com/tomnomnom/assetfinder@latest",
-	"httprobe":    "github.com/tomnomnom/httprobe@latest",
-	"unfurl":      "github.com/tomnomnom/unfurl@latest",
-	"gf":          "github.com/tomnomnom/gf@latest",
-	"meg":         "github.com/tomnomnom/meg@latest",
-	"anew":        "github.com/tomnomnom/anew@latest",
-	"gron":        "github.com/tomnomnom/gron@latest",
-	"puredns":     "github.com/d3mondev/puredns/v2@latest",
-	"shuffledns":  "github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest",
-	"alterx":      "github.com/projectdiscovery/alterx/cmd/alterx@latest",
-	"tlsx":        "github.com/projectdiscovery/tlsx/cmd/tlsx@latest",
-	"uncover":     "github.com/projectdiscovery/uncover/cmd/uncover@latest",
-	"mapcidr":     "github.com/projectdiscovery/mapcidr/cmd/mapcidr@latest",
-	"cdncheck":    "github.com/projectdiscovery/cdncheck/cmd/cdncheck@latest",
-	"interactsh":  "github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest",
-	"asnmap":      "github.com/projectdiscovery/asnmap/cmd/asnmap@latest",
-	"getJS":       "github.com/003random/getJS@latest",
-	"subjs":       "github.com/lc/subjs@latest",
-	"waybackurls": "github.com/tomnomnom/waybackurls@latest",
-	"jsrl":        "github.com/tomnomnom/hacks/jsrl@latest",
-	"burl":        "github.com/tomnomnom/burl@latest",
-	"gospider":    "github.com/jaeles-project/gospider@latest",
-	"jaeles":      "github.com/jaeles-project/jaeles@latest",
-	"cariddi":     "github.com/edoardottt/cariddi/cmd/cariddi@latest",
-	"gobuster":    "github.com/OJ/gobuster/v3@latest",
-	"gowitness":   "github.com/sensepost/gowitness@latest",
-	"html-tool":   "github.com/tomnomnom/hacks/html-tool@latest",
-	"rush":        "github.com/shenwei356/rush@latest",
-	"notify":      "github.com/projectdiscovery/notify/cmd/notify@latest",
-	"dmut":        "github.com/bp0lr/dmut@latest",
-	"urlx":        "github.com/projectdiscovery/urlx/cmd/urlx@latest",
-	"go-dork":     "github.com/dwisiswant0/go-dork@latest",
-	"git-hound":   "github.com/tillson/git-hound@latest",
-	"trufflehog":  "github.com/trufflesecurity/trufflehog/v3@latest",
-	"aix":         "github.com/projectdiscovery/aix/cmd/aix@latest",
-	"tldextract":  "github.com/projectdiscovery/tldextract/cmd/tldextract@latest",
-}
-
-func printGradient(text string) {
-	colors := []string{"\033[38;5;129m", "\033[38;5;128m", "\033[38;5;127m", "\033[38;5;126m", "\033[38;5;125m", "\033[38;5;124m"}
-	for i, r := range text {
-		fmt.Fprintf(os.Stderr, "%s%c", colors[i%len(colors)], r)
-	}
-	fmt.Fprint(os.Stderr, Reset)
-}
-
-func findSecLists() string {
-	home, _ := os.UserHomeDir()
-	paths := []string{
-		"/usr/share/seclists",
-		"/usr/share/wordlists/seclists",
-		"/opt/SecLists",
-		"C:\\SecLists",
-		filepath.Join(home, "SecLists"),
-	}
-	for _, p := range paths {
-		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			return p
-		}
-	}
-	return filepath.Join(home, "SecLists")
-}
-
-func loadState() {
-	state = ExecutionState{Completed: make(map[string]bool)}
-	data, err := ioutil.ReadFile(stateFile)
-	if err == nil {
-		json.Unmarshal(data, &state)
-	}
-}
-
-func saveState() {
-	data, _ := json.MarshalIndent(state, "", "  ")
-	ioutil.WriteFile(stateFile, data, 0644)
-}
-
-func setupSignalHandler() {
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-
-	go func() {
-		for range c {
-			now := time.Now()
-			// Double Tap within 2 seconds
-			if now.Sub(lastSigint) < 2*time.Second {
-				pterm.Error.Println("DOUBLE INTERRUPT DETECTED: Hard Halting Execution Engine. State safely preserved explicitly.")
-				os.Exit(0)
-			}
-			lastSigint = now
-			pterm.Warning.Println("GRACEFUL INTERRUPT CAUGHT: Terminating active module seamlessly and skipping... ")
-
-			cmdMutex.Lock()
-			if activeCmd != nil && activeCmd.Process != nil {
-				activeCmd.Process.Kill() 
-			}
-			cmdMutex.Unlock()
-		}
-	}()
-}
-
-func startSpinner(message string, count *int) chan bool {
-	done := make(chan bool)
-	spinner, _ := pterm.DefaultSpinner.WithShowTimer(true).Start(message)
-	go func() {
-		for {
-			select {
-			case <-done:
-				spinner.Success(fmt.Sprintf("%s - Module Complete!", message))
-				return
-			default:
-				if count != nil && *count > 0 {
-					spinner.UpdateText(fmt.Sprintf("%s (Discovered: %d)", message, *count))
-				}
-				time.Sleep(200 * time.Millisecond)
-			}
-		}
-	}()
-	return done
-}
-
-func findTool(name string) string {
-	if path, err := exec.LookPath(name); err == nil {
-		return path
-	}
-	return filepath.Join(binPath, name)
-}
-
-func aggregateReconData(targetDir string) []string {
-	var agg []string
-	files := []string{
-		filepath.Join(targetDir, "recon", "subdomains.txt"),
-		filepath.Join(targetDir, "recon", "alive_subdomains.txt"),
-		filepath.Join(targetDir, "recon", "open_ports.txt"),
-		filepath.Join(targetDir, "fuzzing", "directories.json"),
-		filepath.Join(targetDir, "vulns", "nuclei_hits.txt"),
-	}
-
-	for _, f := range files {
-		data, err := ioutil.ReadFile(f)
-		if err == nil {
-			lines := strings.Split(string(data), "\n")
-			for _, line := range lines {
-				if strings.TrimSpace(line) != "" {
-					agg = append(agg, line)
-				}
-			}
-		}
-	}
-	return agg
-}
-
-func exportData(target string, targetDir string, format string) {
-	pterm.Info.Printf("Building Custom Intelligent Export Payload into: %s.%s\n", target, format)
-
-	data := aggregateReconData(targetDir)
-	outFile := filepath.Join(targetDir, fmt.Sprintf("%s_oscar_report.%s", target, format))
-
-	switch format {
-	case "txt":
-		ioutil.WriteFile(outFile, []byte(strings.Join(data, "\n")), 0644)
-	case "json":
-		wrapper := map[string]interface{}{
-			"target": target,
-			"timestamp": time.Now().Format(time.RFC3339),
-			"findings": data,
-		}
-		j, _ := json.MarshalIndent(wrapper, "", "  ")
-		ioutil.WriteFile(outFile, j, 0644)
-	case "csv":
-		csvContent := "Target,Finding\n"
-		for _, d := range data {
-			csvContent += fmt.Sprintf("%s,%s\n", target, strings.ReplaceAll(d, ",", " "))
-		}
-		ioutil.WriteFile(outFile, []byte(csvContent), 0644)
-	case "md":
-		mdContent := fmt.Sprintf("# OSCAR V1.0 Reconnaissance Matrix for %s\n> Generated by the Antigravity God-Mode Engine\n\n## Global Findings\n", target)
-		for _, d := range data {
-			mdContent += fmt.Sprintf("- `%s`\n", d)
-		}
-		ioutil.WriteFile(outFile, []byte(mdContent), 0644)
-	case "pdf":
-		m := pdf.NewMaroto(consts.Portrait, consts.A4)
-		m.SetPageMargins(20, 20, 20)
-		m.Row(20, func() {
-			m.Col(12, func() {
-				m.Text(fmt.Sprintf("OSCAR Agentic Target Report: %s", target), props.Text{
-					Top:   5,
-					Size:  16,
-					Style: consts.Bold,
-					Align: consts.Center,
-					Color: color.NewWhite(), 
-				})
-			})
-		})
-		
-		for _, d := range data {
-			m.Row(10, func() {
-				m.Col(12, func() {
-					m.Text(d, props.Text{Size: 10})
-				})
-			})
-		}
-		
-		err := m.OutputFileAndClose(outFile)
-		if err != nil {
-			pterm.Error.Printf("Failed functionally routing PDF: %v\n", err)
-			return
-		}
-	default:
-		pterm.Warning.Printf("Unrecognized format. Defaulting to .txt %s\n", format)
-		ioutil.WriteFile(filepath.Join(targetDir, fmt.Sprintf("%s_oscar_report.txt", target)), []byte(strings.Join(data, "\n")), 0644)
-		outFile = filepath.Join(targetDir, fmt.Sprintf("%s_oscar_report.txt", target))
-	}
-
-	pterm.Success.Printf("Multi-Format Engine reliably generated report cleverly at: %s\n", outFile)
-}
-
-// executeModule encapsulates logic so it skips if completed and sets global commands gracefully.
-func executeModule(moduleName string, message string, cmd *exec.Cmd, outPath string, extractJS bool) {
-	if state.Completed[moduleName] {
-		pterm.Info.Printf("Module '%s' historically verified physically mapping cleanly. Skipping natively.\n", moduleName)
-		return
-	}
-
-	var count int
-	done := startSpinner(message, &count)
-
-	cmdMutex.Lock()
-	activeCmd = cmd
-	cmdMutex.Unlock()
-
-	pipe, _ := cmd.StdoutPipe()
-	cmd.Start()
-
-	f, _ := os.Create(outPath)
-	defer f.Close()
-	
-	// Create JS file stream if active
-	var fJS *os.File
-	if extractJS {
-		jsPath := filepath.Join(targetDir, "javascript", moduleName+"_js.txt")
-		os.MkdirAll(filepath.Dir(jsPath), 0755)
-		fJS, _ = os.OpenFile(jsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		defer fJS.Close()
-	}
-
-	scanner := bufio.NewScanner(pipe)
-	for scanner.Scan() {
-		line := scanner.Text()
-		count++
-		f.WriteString(line + "\n")
-		
-		if extractJS && strings.HasSuffix(line, ".js") {
-			fJS.WriteString(line + "\n")
-		}
-	}
-	
-	cmd.Wait() // If OS Signal kills process, wait safely bounces functionally cleanly
-
-	cmdMutex.Lock()
-	activeCmd = nil
-	cmdMutex.Unlock()
-
-	done <- true
-	
-	// Mark explicitly mathematically completed and strictly store context dynamically unconditionally
-	state.Completed[moduleName] = true
-	saveState()
-
-	if count > 0 {
-		pterm.Success.Printf("%s completed natively: %d vectors dynamically mapped.\n", moduleName, count)
-	} else {
-		pterm.Warning.Printf("%s completed cleanly but discovered zero active physical execution nodes.\n", moduleName)
-	}
-}
-
 func main() {
-	var threads int
-	var timeout int
-	// CLI Protocol Architecture
-	flag.StringVar(&target, "t", "", "Target domain to pipeline (e.g. tesla.com)")
-	flag.StringVar(&bounty, "b", "", "Auto-Generate AI Reports for platform (hackerone, bugcrowd)")
-	flag.StringVar(&format, "f", "txt", "Generated output format (txt, json, csv, pdf, md)")
-	flag.BoolVar(&update, "up", false, "Trigger the Omni-Update strictly mapping architecture locally")
-	flag.BoolVar(&agent, "agent", false, "Generate Claude/Cursor MCP HexStrike settings locally (Agentic Mode)")
-	flag.IntVar(&threads, "threads", 50, "Adjust execution threading intelligently natively")
-	flag.IntVar(&timeout, "timeout", 10, "Execution timeout in seconds")
+	var (
+		target  = flag.String("t", "", "Target domain (e.g. tesla.com)")
+		update  = flag.Bool("up", false, "Install / update all required tools")
+		format  = flag.String("f", "md", "Report format: txt, md, json, csv, pdf")
+		threads = flag.Int("threads", 50, "Concurrent threads per module")
+		timeout = flag.Int("timeout", 30, "Per-module timeout in minutes")
+		noAI    = flag.Bool("no-ai", false, "Skip Ollama AI triage")
+		resume  = flag.Bool("resume", false, "Resume a previous scan (skip completed stages)")
+		stage   = flag.Int("stage", 1, "Start from a specific stage (1–5)")
+		mcp     = flag.Bool("mcp", false, "Print MCP server configuration for Claude/Cursor")
+		ver     = flag.Bool("v", false, "Show version and exit")
+	)
 
-	flag.Usage = func() {
-		pterm.DefaultHeader.WithFullWidth().Println("OSCAR V1.0: THE OMNI-ARSENAL")
-		pterm.Info.Println("Open-Source Cyber Attack Reconnaissance")
-		
-		fmt.Println()
-		pterm.DefaultSection.Println("PIPELINE TARGETING")
-		fmt.Printf("    -t, --target     Target domain to physically map organically\n\n")
-
-		pterm.DefaultSection.Println("AI TRIAGE & EXPLOIT REPORTING")
-		fmt.Printf("    -b, --bounty     Auto-Generate Analysis Reports (hackerone, bugcrowd, intigriti)\n")
-		fmt.Printf("    -f, --format     Specifies file export output (txt, md, json, csv, pdf) [default: txt]\n\n")
-
-		pterm.DefaultSection.Println("CORE PERFORMANCE")
-		fmt.Printf("    -threads         Engine threading organically realistically uniquely! [default: 50]\n")
-		fmt.Printf("    -timeout         Time bounds functionally logically mapped appropriately [default: 10]\n\n")
-
-		pterm.DefaultSection.Println("SYSTEM UTILITIES")
-		fmt.Printf("    -up, --update    Re-Flash the Omni-Update engine (Updates all 50 underlying tools)\n")
-		fmt.Printf("    -agent           Initialize Agentic MCP Server configuration natively linking exactly to HexStrike\n\n")
-	}
+	flag.Usage = printUsage
 	flag.Parse()
 
-	// Handle Updates Natively
-	if update {
-		TriggerAutoUpdate()
+	if *ver {
+		fmt.Printf("OSCAR v%s\n", Version)
 		return
 	}
 
-	// Handle Agent Interface Structs natively explicitly 
-	if agent {
-		home, _ := os.UserHomeDir()
-		hexPath := filepath.Join(home, "hexstrike-ai")
-		
-		pterm.DefaultHeader.Println("AGENTIC MODE: HEXSTRIKE AI MCP INTEGRATION")
-		if _, err := os.Stat(hexPath); os.IsNotExist(err) {
-			pterm.Error.Println("Hexstrike Python framework not found natively! Please run `./oscar -up` first to securely provision it!")
-			os.Exit(1)
-		}
-		
-		pythonBin := filepath.Join(hexPath, "hexstrike-env", "bin", "python3")
-		mcpFile := filepath.Join(hexPath, "hexstrike_mcp.py")
-		
-		pterm.Info.Println("Add this precisely into your AI App Configuration (`claude_desktop_config.json` / Cursor):")
-		fmt.Printf(`{
-  "mcpServers": {
-    "hexstrike": {
-      "command": "%s",
-      "args": ["%s"]
-    }
-  }
-}
-`, pythonBin, mcpFile)
-		fmt.Fprintf(os.Stderr, "\n")
-		os.Exit(0)
+	printBanner()
+
+	if *mcp {
+		printMCPConfig()
+		return
 	}
 
-	if target == "" {
-		pterm.Error.Println("A target explicitly requires strict input (-t flag) natively to dynamically orchestrate arrays.")
+	if *update {
+		RunInstaller()
+		return
+	}
+
+	if *target == "" {
+		flag.Usage()
 		os.Exit(1)
 	}
 
-	pterm.DefaultHeader.WithFullWidth().Printf("OSCAR V1.0: HUNTING %s\n", strings.ToUpper(target))
-	gopath := os.Getenv("GOPATH")
-	if gopath == "" {
-		home, _ := os.UserHomeDir()
-		gopath = filepath.Join(home, "go")
-	}
-	binPath = filepath.Join(gopath, "bin")
-
-	// Target Directory Workspaces mapping gracefully unconditionally
-	targetDir = filepath.Join("reports", target)
-	os.MkdirAll(filepath.Join(targetDir, "recon"), 0755)
-	os.MkdirAll(filepath.Join(targetDir, "fuzzing"), 0755)
-	os.MkdirAll(filepath.Join(targetDir, "vulns"), 0755)
-	stateFile = filepath.Join(targetDir, ".oscar_state.json")
-
-	loadState()
-	setupSignalHandler()
-
-	pterm.Info.Printf("Initializing OSCAR V1.0 Execution Engine mapped strictly mapping to: %s\n", target)
-	pterm.Info.Printf("Workspace established optimally at: %s\n", targetDir)
-
-	// Verify required core utilities 
-	coreRequires := []string{"subfinder", "dnsx", "naabu", "httpx", "gau", "katana", "ffuf", "nuclei"}
-	for _, tool := range coreRequires {
-		if _, err := exec.LookPath(findTool(tool)); err != nil {
-			pterm.Warning.Printf("'%s' is physically missing. Execute `./oscar -up` organically configuring matrices properly.\n", tool)
-		}
+	cfg := &Config{
+		Target:  *target,
+		Threads: *threads,
+		Timeout: *timeout,
+		Format:  *format,
+		NoAI:    *noAI,
+		Resume:  *resume,
+		Stage:   *stage,
 	}
 
-	// 1. Subfinder
-	subFile := filepath.Join(targetDir, "recon", "subdomains.txt")
-	subCmd := exec.Command(findTool("subfinder"), "-d", target, "-silent", "-all")
-	executeModule("Subfinder", "Subfinder dynamically mapping explicitly natively utilizing 50 sources...", subCmd, subFile, false)
-
-	// 2. DNSX
-	dnsxFile := filepath.Join(targetDir, "recon", "alive_subdomains.txt")
-	dnsxCmd := exec.Command(findTool("dnsx"), "-silent", "-a", "-cname", "-resp", "-l", subFile)
-	executeModule("Dnsx", "Dnsx mathematically confirming active nodes organically...", dnsxCmd, dnsxFile, false)
-
-	// 3. Naabu
-	naabuFile := filepath.Join(targetDir, "recon", "open_ports.txt")
-	naabuCmd := exec.Command(findTool("naabu"), "-silent", "-top-ports", "100", "-l", subFile)
-	executeModule("Naabu", "Naabu inherently hunting raw exposed protocols mapping natively...", naabuCmd, naabuFile, false)
-
-	// 4. Httpx
-	httpxFile := filepath.Join(targetDir, "recon", "httpx_profiles.txt")
-	httpxCmd := exec.Command(findTool("httpx"), "-silent", "-title", "-tech-detect", "-status-code", "-l", dnsxFile)
-	executeModule("Httpx", "Httpx serializing live responsive protocol streams dynamically...", httpxCmd, httpxFile, false)
-
-	// 5. GAU
-	gauFile := filepath.Join(targetDir, "recon", "historical_urls.txt")
-	gauCmd := exec.Command(findTool("gau"), "--threads", "50", "--subs", target)
-	executeModule("GAU", "GAU parsing vast historical parameter archives cleanly (Ctrl+C to securely intentionally bypass)...", gauCmd, gauFile, true)
-
-	// 6. Katana
-	katanaFile := filepath.Join(targetDir, "recon", "crawled_urls.txt")
-	katanaCmd := exec.Command(findTool("katana"), "-silent", "-l", dnsxFile, "-depth", "3", "-js-crawl", "-known-files")
-	executeModule("Katana", "Katana strictly natively organically actively mapping headless arrays seamlessly (Ctrl+C securely conditionally bypasses)...", katanaCmd, katanaFile, true)
-
-	// 7. FFUF Correctly Mapped with -s conceptually organically flawlessly ideally explicitly safely
-	ffufFile := filepath.Join(targetDir, "fuzzing", "directories.json")
-	secList := filepath.Join(findSecLists(), "Discovery", "Web-Content", "raft-large-directories.txt")
-	if _, err := os.Stat(secList); !os.IsNotExist(err) {
-		ffufCmd := exec.Command(findTool("ffuf"), "-s", "-w", dnsxFile+":HOST", "-w", secList+":PATH", "-u", "http://HOST/PATH", "-mc", "200", "-of", "json", "-o", ffufFile)
-		executeModule("Ffuf", "Ffuf dynamically fuzzing API constraints utilizing SecLists intelligently...", ffufCmd, ffufFile, false)
-	}
-
-	// 8. Nuclei Target Matrix
-	nucleiFile := filepath.Join(targetDir, "vulns", "nuclei_hits.txt")
-	nucleiCmd := exec.Command(findTool("nuclei"), "-silent", "-l", httpxFile)
-	executeModule("Nuclei", "Nuclei aggressively launching Zero-Day templates seamlessly dynamically...", nucleiCmd, nucleiFile, false)
-
-	// 9. Nuclei JS Secrets Matrix
-	jsFileAggregate := filepath.Join(targetDir, "javascript", "aggregate_js.txt")
-	// Concat Katana JS & GAU JS into one perfectly parsed file
-	if state.Completed["Katana"] || state.Completed["GAU"] {
-        // Collect JS explicitly into central array
-		kjs := filepath.Join(targetDir, "javascript", "Katana_js.txt")
-		gjs := filepath.Join(targetDir, "javascript", "GAU_js.txt")
-		
-		aggregateData := ""
-		if data, err := ioutil.ReadFile(kjs); err == nil { aggregateData += string(data) }
-		if data, err := ioutil.ReadFile(gjs); err == nil { aggregateData += string(data) }
-		
-		if len(aggregateData) > 0 {
-			ioutil.WriteFile(jsFileAggregate, []byte(aggregateData), 0644)
-			jsVulnFile := filepath.Join(targetDir, "vulns", "javascript_secrets.txt")
-			jsNucleiCmd := exec.Command(findTool("nuclei"), "-silent", "-l", jsFileAggregate, "-tags", "exposure,token,config")
-			executeModule("Nuclei JS Exposure", "Nuclei natively tracking exactly hardcoded API secrets dynamically functionally inside JS logic inherently...", jsNucleiCmd, jsVulnFile, false)
-		}
-	}
-
-	// Dynamic Intelligent Reporting Structure
-	exportData(target, targetDir, format)
-
-	pterm.Success.Println("=== OSCAR V1.0 MEGA-PIPELINE EVOLUTION COMPLETE ===")
+	RunScan(cfg)
 }
 
-func TriggerAutoUpdate() {
-	pterm.DefaultHeader.Printf("Initiating Global OS-Trivial Omni-Update Sequence... (%d Native Modules)\n", len(AutoInstallerArsenal))
+// RunScan sets up and executes the full pipeline for the given config.
+func RunScan(cfg *Config) {
+	// Open database
+	db, err := OpenDB("oscar.db")
+	if err != nil {
+		pterm.Warning.Printf("Database unavailable: %v — continuing without persistence\n", err)
+	} else {
+		defer db.Close()
+	}
 
-	for name, gitURL := range AutoInstallerArsenal {
-		spinner, _ := pterm.DefaultSpinner.Start(fmt.Sprintf("Validating dynamically logic securely strictly matching for %s...", name))
-		cmd := exec.Command("go", "install", "-v", gitURL)
-		if err := cmd.Run(); err != nil {
-			spinner.Fail(fmt.Sprintf("Failed to install/update %s natively conditionally correctly: %v", name, err))
-		} else {
-			spinner.Success(fmt.Sprintf("%s successfully synced explicitly logically precisely natively!", name))
+	// Set up workspace
+	ws, err := NewWorkspace(cfg.Target)
+	if err != nil {
+		pterm.Fatal.Printf("Cannot create workspace: %v\n", err)
+	}
+
+	// Track in DB
+	var scanID int64
+	if db != nil {
+		scanID, _ = db.StartScan(cfg.Target)
+	}
+
+	// Context with graceful cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle Ctrl+C: first press cancels, second press exits hard
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		count := 0
+		for range sigCh {
+			count++
+			if count == 1 {
+				pterm.Warning.Println("Interrupt received — stopping current module gracefully. Press Ctrl+C again to force exit.")
+				cancel()
+			} else {
+				pterm.Error.Println("Force exit. State has been saved.")
+				os.Exit(1)
+			}
 		}
+	}()
+
+	// Build and run the engine
+	engine := NewEngine(cfg, ws, db)
+	if err := engine.Run(ctx); err != nil {
+		pterm.Error.Printf("Scan failed: %v\n", err)
 	}
 
-	secListsPath := findSecLists()
-	if _, err := os.Stat(secListsPath); os.IsNotExist(err) {
-		pterm.Info.Printf("Auto-Provisioning immense Wordlists efficiently securely natively tracking SecLists to %s...\n", secListsPath)
-		exec.Command("git", "clone", "https://github.com/danielmiessler/SecLists.git", secListsPath).Run()
-	} else {
-		pterm.Success.Printf("SecLists natively functionally mathematically explicitly mapped safely magically conditionally appropriately accurately inside %s!\n", secListsPath)
+	// Generate report
+	if db != nil {
+		db.FinishScan(scanID)
 	}
 
-	home, _ := os.UserHomeDir()
-	hexPath := filepath.Join(home, "hexstrike-ai")
-	if _, err := os.Stat(hexPath); os.IsNotExist(err) {
-		pterm.Info.Printf("Auto-Provisioning Agentic Framework creatively natively confidently tracking physically intuitively appropriately creatively natively intelligently intelligently efficiently effectively securely appropriately elegantly naturally efficiently to %s...\n", hexPath)
-		exec.Command("git", "clone", "https://github.com/0x4m4/hexstrike-ai.git", hexPath).Run()
-		
-		pterm.Info.Println("Compiling seamlessly beautifully optimally reliably natively logically appropriately intelligently organically properly intelligently smoothly appropriately elegantly correctly natively cleanly magically optimally creatively natively elegantly authentically Python elegantly elegantly creatively properly dynamically runtime confidently efficiently.")
-		exec.Command("python3", "-m", "venv", filepath.Join(hexPath, "hexstrike-env")).Run()
-		
-		pipPath := filepath.Join(hexPath, "hexstrike-env", "bin", "pip")
-		reqPath := filepath.Join(hexPath, "requirements.txt")
-		exec.Command(pipPath, "install", "-r", reqPath).Run()
-	} else {
-		pterm.Success.Printf("Hexstrike AI Python accurately correctly gracefully functionally elegantly magically correctly optimally reliably intuitively successfully organically appropriately rationally smoothly adequately properly brilliantly accurately creatively framework successfully confidently intuitively conditionally organically brilliantly cleanly authentically perfectly correctly seamlessly validated gracefully logically conceptually safely cleanly magically correctly structurally exactly cleanly efficiently mathematically cleanly securely efficiently correctly at %s!\n", hexPath)
+	GenerateReport(cfg, ws, cfg.NoAI)
+}
+
+func printBanner() {
+	// Gradient ASCII art banner
+	gradient := []string{
+		"\033[38;5;93m",
+		"\033[38;5;99m",
+		"\033[38;5;105m",
+		"\033[38;5;111m",
+		"\033[38;5;117m",
+		"\033[38;5;123m",
 	}
 
-	pterm.Success.Println("=== OMNI-UPDATE V1.0 COMPLETE ===")
+	lines := []string{
+		`   ██████╗ ███████╗ ██████╗ █████╗ ██████╗ `,
+		`  ██╔═══██╗██╔════╝██╔════╝██╔══██╗██╔══██╗`,
+		`  ██║   ██║███████╗██║     ███████║██████╔╝`,
+		`  ██║   ██║╚════██║██║     ██╔══██║██╔══██╗`,
+		`  ╚██████╔╝███████║╚██████╗██║  ██║██║  ██║`,
+		`   ╚═════╝ ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝`,
+	}
+
+	fmt.Println()
+	for i, line := range lines {
+		color := gradient[i%len(gradient)]
+		fmt.Printf("%s%s\033[0m\n", color, line)
+	}
+
+	fmt.Printf("\033[38;5;141m  %-44s\033[0m\n", fmt.Sprintf("Omni-Signal Capture & Agentic Recon  v%s", Version))
+	fmt.Printf("\033[38;5;245m  %-44s\033[0m\n", "github.com/su6osec/oscar")
+	fmt.Println()
+}
+
+func printUsage() {
+	printBanner()
+	pterm.DefaultHeader.WithFullWidth().Println(" Usage ")
+
+	fmt.Println()
+	pterm.DefaultSection.Println("Scanning")
+	fmt.Println("  -t <domain>    Target domain to recon  (e.g. tesla.com)")
+	fmt.Println("  -threads <n>   Concurrent threads per module  [default: 50]")
+	fmt.Println("  -timeout <n>   Per-module timeout in minutes  [default: 30]")
+	fmt.Println("  -stage <n>     Start from stage 1–5           [default: 1]")
+	fmt.Println("  -resume        Resume a previous scan")
+
+	fmt.Println()
+	pterm.DefaultSection.Println("Output")
+	fmt.Println("  -f <format>    Report format: txt, md, json, csv, pdf  [default: md]")
+	fmt.Println("  -no-ai         Skip Ollama AI triage")
+
+	fmt.Println()
+	pterm.DefaultSection.Println("System")
+	fmt.Println("  -up            Install / update all required tools")
+	fmt.Println("  -mcp           Print MCP configuration for Claude/Cursor")
+	fmt.Println("  -v             Show version")
+
+	fmt.Println()
+	pterm.DefaultSection.Println("Pipeline Stages")
+	stages := []string{
+		"1  Passive Discovery   subfinder, assetfinder, crt.sh",
+		"2  DNS Resolution      dnsx, alterx",
+		"3  Service Mapping     naabu, httpx, tlsx",
+		"4  Content Discovery   gau, katana, getJS, ffuf",
+		"5  Vuln Analysis       nuclei, dalfox, nuclei-js",
+	}
+	for _, s := range stages {
+		fmt.Printf("   %s\n", s)
+	}
+	fmt.Println()
 }

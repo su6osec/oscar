@@ -1,162 +1,189 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/jung-kurt/gofpdf"
 	"github.com/pbnjay/memory"
+	"github.com/pterm/pterm"
 )
 
-// Vulnerability represents the data intercepted from Nuclei
-type Vulnerability struct {
-	Name        string
-	Severity    string
-	Host        string
-	Matched     string
-	Description string
-}
+const ollamaBase = "http://localhost:11434"
 
-// getOptimalAIModel interrogates the local hardware payload and securely sets the exact AI 
-// parameters to prevent overriding hardware constraints entirely locally.
-func getOptimalAIModel() string {
-	memBytes := memory.TotalMemory()
-	memGB := memBytes / (1024 * 1024 * 1024)
+// SelectAIModel returns the best Ollama model name for the current hardware.
+func SelectAIModel() string {
+	totalMB := memory.TotalMemory() / (1024 * 1024)
 
-	fmt.Fprintf(os.Stderr, " [*] Hardware Query: Total System RAM detected at %d GB\n", memGB)
-
-	if memGB < 8 {
-		return "phi3:mini"
-	} else if memGB < 16 {
-		return "gemma2:2b"
-	}
-	return "llama3:8b"
-}
-
-// GenerateAIReport creates the platform-specific output files natively 
-// utilizing multiple output file formats (md, txt, pdf)
-func GenerateAIReport(platform string, format string, vuln Vulnerability) {
-	fmt.Fprintf(os.Stderr, "%s[AI]%s Initiating Threat Triage & Automated Writeup for %s (Format: %s)...\n", Purple, Reset, platform, format)
-
-	aiModel := getOptimalAIModel()
-	fmt.Fprintf(os.Stderr, " [*] AI Selection Matrix complete. Selected Engine: [%s]\n", aiModel)
-
-	// Create directories if missing
-	os.MkdirAll("reports", os.ModePerm)
-
-	if format == "" { format = "md" } // Default to Markdown
-	reportName := fmt.Sprintf("reports/[%s]_%s_%s.%s", platform, vuln.Severity, vuln.Host, format)
-	reportName = filepath.Clean(reportName)
-
-	var reportContent string
-	switch platform {
-	case "hackerone", "h1":
-		reportContent = fmt.Sprintf(`## Summary
-Hello HackerOne Team,
-The OSCAR AI Engine natively intercepted a validated **%s** vulnerability on the target %s.
-
-## Steps To Reproduce
-1. The target endpoint was identified dynamically:
-%s
-2. A malicious HTTP packet confirmed execution.
-
-## Impact
-%s
-`, vuln.Name, vuln.Host, vuln.Matched, vuln.Description)
-
-	case "bugcrowd", "bc":
-		reportContent = fmt.Sprintf(`### Vulnerability Title: %s
-**Target**: %s
-**Severity**: %s
-
-### Proof of Concept
-The validated injection vector exists at:
-%s
-
-### Remediation
-*(OSCAR AI Generated Mitigation Code here)*
-`, vuln.Name, vuln.Host, vuln.Severity, vuln.Matched)
-
+	switch {
+	case totalMB < 4096:
+		return "qwen2.5:0.5b"
+	case totalMB < 8192:
+		return "phi3.5:mini"
+	case totalMB < 16384:
+		return "llama3.2:3b"
 	default:
-		reportContent = fmt.Sprintf(`## Description
-The Antigravity Engine detected a %s vulnerability.
-**Asset**: %s
-**Payload Match**: %s
-`, vuln.Name, vuln.Host, vuln.Matched)
-	}
-
-	reportContent += fmt.Sprintf("\n\n---\n*Report generated autonomously by OSCAR's AI Engine on %s*\n*Model utilized natively: %s*", time.Now().Format(time.RFC822), aiModel)
-
-	// Dispatch to the correct Multi-Format Renderer
-	switch format {
-	case "txt":
-		writeTxt(reportName, reportContent)
-	case "pdf":
-		writePdf(reportName, reportContent)
-	case "md":
-		fallthrough
-	default:
-		writeMd(reportName, reportContent)
+		return "llama3.1:8b"
 	}
 }
 
-func writeMd(path string, content string) {
-	err := os.WriteFile(path, []byte(content), 0644)
+// OllamaAvailable returns true if the Ollama daemon is reachable.
+func OllamaAvailable() bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(ollamaBase + "/api/tags")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s[-]%s Failed to write Markdown Report: %v\n", Red, Reset, err)
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+type ollamaRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	Stream bool   `json:"stream"`
+}
+
+type ollamaResponse struct {
+	Response string `json:"response"`
+	Done     bool   `json:"done"`
+}
+
+// OllamaGenerate sends a prompt to the local Ollama instance and returns the response.
+func OllamaGenerate(model, prompt string) (string, error) {
+	payload, _ := json.Marshal(ollamaRequest{
+		Model:  model,
+		Prompt: prompt,
+		Stream: false,
+	})
+
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Post(ollamaBase+"/api/generate", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("ollama: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	var result ollamaResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", err
+	}
+	return result.Response, nil
+}
+
+// AITriage runs an AI analysis over the scan findings and appends to the report.
+func AITriage(ws *Workspace, target string, reportPath string) {
+	if !OllamaAvailable() {
+		pterm.Warning.Println("Ollama not running — skipping AI triage. Start with: ollama serve")
 		return
 	}
-	fmt.Fprintf(os.Stderr, "%s[+]%s Auto-Pwn Report Saved: %s\n", Green, Reset, path)
-}
 
-func writeTxt(path string, content string) {
-	// Crude markdown stripping for pure flat txt display
-	stripped := strings.ReplaceAll(content, "## ", "")
-	stripped = strings.ReplaceAll(stripped, "### ", "")
-	stripped = strings.ReplaceAll(stripped, "**", "")
+	totalMB := memory.TotalMemory() / (1024 * 1024)
+	model := SelectAIModel()
+	pterm.Info.Printf("AI triage using %s (system RAM: %d MB)\n", model, totalMB)
 
-	err := os.WriteFile(path, []byte(stripped), 0644)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s[-]%s Failed to write TXT Report: %v\n", Red, Reset, err)
+	// Collect top findings for the prompt
+	findings := collectTopFindings(ws)
+	if len(findings) == 0 {
+		pterm.Info.Println("No significant findings to triage.")
 		return
 	}
-	fmt.Fprintf(os.Stderr, "%s[+]%s Auto-Pwn TXT Report Saved: %s\n", Green, Reset, path)
+
+	prompt := buildTriagePrompt(target, findings)
+
+	spinner, _ := pterm.DefaultSpinner.Start("AI analyzing findings...")
+	response, err := OllamaGenerate(model, prompt)
+	if err != nil {
+		spinner.Fail(fmt.Sprintf("AI triage failed: %v", err))
+		return
+	}
+	spinner.Success("AI triage complete")
+
+	// Append AI section to report
+	aiSection := fmt.Sprintf("\n\n## AI Security Triage\n\n**Model:** %s  \n**Date:** %s\n\n%s\n",
+		model, time.Now().Format("2006-01-02 15:04"), response)
+
+	f, err := os.OpenFile(reportPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err == nil {
+		f.WriteString(aiSection) //nolint:errcheck
+		f.Close()
+	}
+
+	pterm.Success.Printf("AI analysis appended to: %s\n", reportPath)
 }
 
-func writePdf(path string, content string) {
-	// Setup Document Canvas
-	pdf := gofpdf.New("P", "mm", "A4", "")
-	pdf.AddPage()
+func collectTopFindings(ws *Workspace) []string {
+	var findings []string
 
-	// Title Block
-	pdf.SetFont("Arial", "B", 16)
-	pdf.Cell(40, 10, "OSCAR Threat Intelligence Report")
-	pdf.Ln(12)
+	// High-value: nuclei hits (first 20)
+	if lines := readFirstN(ws.NucleiHits, 20); len(lines) > 0 {
+		findings = append(findings, "=== Nuclei Vulnerability Hits ===")
+		findings = append(findings, lines...)
+	}
 
-	// Determine body content by stripping bold tags completely for clean drawing 
-	bodyText := strings.ReplaceAll(content, "**", "")
-	lines := strings.Split(bodyText, "\n")
-	
-	for _, line := range lines {
-		// Identify Headers
-		if strings.HasPrefix(line, "##") {
-			pdf.SetFont("Arial", "B", 14)
-			text := strings.ReplaceAll(line, "#", "")
-			pdf.Cell(40, 10, strings.TrimSpace(text))
-			pdf.Ln(8)
-		} else {
-			pdf.SetFont("Arial", "", 11)
-			pdf.MultiCell(190, 6, line, "", "", false)
+	// Secrets
+	if lines := readFirstN(ws.Secrets, 10); len(lines) > 0 {
+		findings = append(findings, "\n=== Secrets / Exposed Tokens ===")
+		findings = append(findings, lines...)
+	}
+
+	// XSS
+	if lines := readFirstN(ws.XSSHits, 10); len(lines) > 0 {
+		findings = append(findings, "\n=== XSS Findings ===")
+		findings = append(findings, lines...)
+	}
+
+	// Stats
+	findings = append(findings, fmt.Sprintf("\n=== Stats ==="))
+	findings = append(findings, fmt.Sprintf("Subdomains: %d", CountLines(ws.RawSubdomains)))
+	findings = append(findings, fmt.Sprintf("Alive Hosts: %d", CountLines(ws.AliveHosts)))
+	findings = append(findings, fmt.Sprintf("Web Services: %d", CountLines(ws.LiveWeb)))
+	findings = append(findings, fmt.Sprintf("Total URLs: %d", CountLines(ws.AllURLs)))
+
+	return findings
+}
+
+func buildTriagePrompt(target string, findings []string) string {
+	data := strings.Join(findings, "\n")
+	return fmt.Sprintf(`You are a professional bug bounty hunter and penetration tester.
+Analyze the following reconnaissance findings for target: %s
+
+%s
+
+Provide:
+1. A brief executive summary (2-3 sentences)
+2. The top 3 most critical findings to investigate first, with reasoning
+3. Specific attack vectors or follow-up actions for each critical finding
+4. Quick wins (easy vulnerabilities to confirm)
+
+Be concise and technical. Focus on actionable insights.`, target, data)
+}
+
+func readFirstN(path string, n int) []string {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var lines []string
+	sc := bufio.NewScanner(f)
+	for sc.Scan() && len(lines) < n {
+		line := strings.TrimSpace(sc.Text())
+		if line != "" {
+			lines = append(lines, line)
 		}
 	}
-
-	err := pdf.OutputFileAndClose(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s[-]%s Failed to draw PDF Report: %v\n", Red, Reset, err)
-		return
-	}
-	fmt.Fprintf(os.Stderr, "%s[+]%s High-Definition PDF Report Saved safely: %s\n", Green, Reset, path)
+	return lines
 }

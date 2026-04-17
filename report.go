@@ -1,0 +1,276 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/jung-kurt/gofpdf"
+	"github.com/pterm/pterm"
+)
+
+// ScanReport aggregates all findings for export.
+type ScanReport struct {
+	Target    string    `json:"target"`
+	Timestamp time.Time `json:"timestamp"`
+	Stats     ScanStats `json:"stats"`
+	Sections  []Section `json:"sections"`
+}
+
+// Section is a labeled group of findings.
+type Section struct {
+	Title    string   `json:"title"`
+	Findings []string `json:"findings"`
+}
+
+// GenerateReport creates a report file in the specified format.
+func GenerateReport(cfg *Config, ws *Workspace, noAI bool) string {
+	pterm.DefaultSection.Println("Generating Report")
+
+	report := buildReport(cfg, ws)
+	outPath := filepath.Join(ws.Root, fmt.Sprintf("%s_oscar_report.%s", cfg.Target, cfg.Format))
+
+	var err error
+	switch cfg.Format {
+	case "json":
+		err = writeJSON(outPath, report)
+	case "csv":
+		err = writeCSV(outPath, report)
+	case "txt":
+		err = writeTXT(outPath, report)
+	case "pdf":
+		err = writePDF(outPath, report)
+	default: // md
+		cfg.Format = "md"
+		outPath = filepath.Join(ws.Root, fmt.Sprintf("%s_oscar_report.md", cfg.Target))
+		err = writeMD(outPath, report)
+	}
+
+	if err != nil {
+		pterm.Error.Printf("Report generation failed: %v\n", err)
+		return ""
+	}
+
+	pterm.Success.Printf("Report saved: %s\n", outPath)
+
+	// AI triage appends to the markdown report
+	if !noAI && cfg.Format == "md" {
+		AITriage(ws, cfg.Target, outPath)
+	}
+
+	return outPath
+}
+
+func buildReport(cfg *Config, ws *Workspace) *ScanReport {
+	r := &ScanReport{
+		Target:    cfg.Target,
+		Timestamp: time.Now(),
+	}
+
+	r.Stats = ScanStats{
+		Subdomains:  CountLines(ws.RawSubdomains),
+		AliveHosts:  CountLines(ws.AliveHosts),
+		WebServices: CountLines(ws.LiveWeb),
+		OpenPorts:   CountLines(ws.OpenPorts),
+		URLs:        CountLines(ws.AllURLs),
+		JSFiles:     CountLines(ws.JSFiles),
+		Vulns:       CountLines(ws.NucleiHits) + CountLines(ws.XSSHits),
+		Secrets:     CountLines(ws.Secrets),
+		Dirs:        CountLines(ws.Dirs),
+	}
+
+	type section struct {
+		title string
+		path  string
+	}
+
+	sections := []section{
+		{"Subdomains (Raw)", ws.RawSubdomains},
+		{"Alive Hosts", ws.AliveHosts},
+		{"Live Web Services", ws.LiveWeb},
+		{"Open Ports", ws.OpenPorts},
+		{"All URLs", ws.AllURLs},
+		{"JavaScript Files", ws.JSFiles},
+		{"Directories", ws.Dirs},
+		{"Nuclei Findings", ws.NucleiHits},
+		{"XSS Findings", ws.XSSHits},
+		{"Secrets", ws.Secrets},
+		{"TLS Info", ws.TLSInfo},
+	}
+
+	for _, s := range sections {
+		lines := readLines(s.path)
+		if len(lines) > 0 {
+			r.Sections = append(r.Sections, Section{Title: s.title, Findings: lines})
+		}
+	}
+	return r
+}
+
+func readLines(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var lines []string
+	for _, l := range strings.Split(string(data), "\n") {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+func writeJSON(path string, r *ScanReport) error {
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+func writeCSV(path string, r *ScanReport) error {
+	var sb strings.Builder
+	sb.WriteString("target,section,finding\n")
+	for _, s := range r.Sections {
+		for _, f := range s.Findings {
+			sb.WriteString(fmt.Sprintf("%s,%s,%s\n",
+				r.Target,
+				strings.ReplaceAll(s.Title, ",", " "),
+				strings.ReplaceAll(f, ",", " ")))
+		}
+	}
+	return os.WriteFile(path, []byte(sb.String()), 0644)
+}
+
+func writeTXT(path string, r *ScanReport) error {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("OSCAR V%s — Reconnaissance Report\n", Version))
+	sb.WriteString(fmt.Sprintf("Target:    %s\n", r.Target))
+	sb.WriteString(fmt.Sprintf("Generated: %s\n", r.Timestamp.Format("2006-01-02 15:04:05")))
+	sb.WriteString(strings.Repeat("─", 60) + "\n\n")
+
+	sb.WriteString("STATISTICS\n")
+	sb.WriteString(fmt.Sprintf("  Subdomains   : %d\n", r.Stats.Subdomains))
+	sb.WriteString(fmt.Sprintf("  Alive Hosts  : %d\n", r.Stats.AliveHosts))
+	sb.WriteString(fmt.Sprintf("  Web Services : %d\n", r.Stats.WebServices))
+	sb.WriteString(fmt.Sprintf("  Open Ports   : %d\n", r.Stats.OpenPorts))
+	sb.WriteString(fmt.Sprintf("  URLs         : %d\n", r.Stats.URLs))
+	sb.WriteString(fmt.Sprintf("  JS Files     : %d\n", r.Stats.JSFiles))
+	sb.WriteString(fmt.Sprintf("  Vulns Found  : %d\n", r.Stats.Vulns))
+	sb.WriteString(fmt.Sprintf("  Secrets      : %d\n", r.Stats.Secrets))
+	sb.WriteString("\n")
+
+	for _, s := range r.Sections {
+		sb.WriteString(fmt.Sprintf("── %s (%d)\n", s.Title, len(s.Findings)))
+		for _, f := range s.Findings {
+			sb.WriteString(fmt.Sprintf("   %s\n", f))
+		}
+		sb.WriteString("\n")
+	}
+	return os.WriteFile(path, []byte(sb.String()), 0644)
+}
+
+func writeMD(path string, r *ScanReport) error {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# OSCAR Reconnaissance Report: %s\n\n", r.Target))
+	sb.WriteString(fmt.Sprintf("> Generated by OSCAR v%s on %s\n\n", Version, r.Timestamp.Format("2006-01-02 15:04")))
+
+	sb.WriteString("## Statistics\n\n")
+	sb.WriteString("| Category | Count |\n|----------|-------|\n")
+	sb.WriteString(fmt.Sprintf("| Subdomains | %d |\n", r.Stats.Subdomains))
+	sb.WriteString(fmt.Sprintf("| Alive Hosts | %d |\n", r.Stats.AliveHosts))
+	sb.WriteString(fmt.Sprintf("| Web Services | %d |\n", r.Stats.WebServices))
+	sb.WriteString(fmt.Sprintf("| Open Ports | %d |\n", r.Stats.OpenPorts))
+	sb.WriteString(fmt.Sprintf("| URLs Discovered | %d |\n", r.Stats.URLs))
+	sb.WriteString(fmt.Sprintf("| JavaScript Files | %d |\n", r.Stats.JSFiles))
+	sb.WriteString(fmt.Sprintf("| Vulnerabilities | %d |\n", r.Stats.Vulns))
+	sb.WriteString(fmt.Sprintf("| Secrets Found | %d |\n", r.Stats.Secrets))
+	sb.WriteString(fmt.Sprintf("| Directories | %d |\n\n", r.Stats.Dirs))
+
+	for _, s := range r.Sections {
+		sb.WriteString(fmt.Sprintf("## %s (%d)\n\n", s.Title, len(s.Findings)))
+		for _, f := range s.Findings {
+			sb.WriteString(fmt.Sprintf("- `%s`\n", f))
+		}
+		sb.WriteString("\n")
+	}
+	return os.WriteFile(path, []byte(sb.String()), 0644)
+}
+
+func writePDF(path string, r *ScanReport) error {
+	pdf := gofpdf.New("P", "mm", "A4", "")
+	pdf.AddPage()
+	pdf.SetAutoPageBreak(true, 15)
+
+	// Title
+	pdf.SetFont("Arial", "B", 18)
+	pdf.SetTextColor(30, 30, 30)
+	pdf.CellFormat(0, 12, fmt.Sprintf("OSCAR Reconnaissance Report"), "", 1, "C", false, 0, "")
+
+	pdf.SetFont("Arial", "", 11)
+	pdf.SetTextColor(80, 80, 80)
+	pdf.CellFormat(0, 8, fmt.Sprintf("Target: %s  |  %s", r.Target, r.Timestamp.Format("2006-01-02 15:04")), "", 1, "C", false, 0, "")
+	pdf.Ln(6)
+
+	// Stats table
+	pdf.SetFont("Arial", "B", 13)
+	pdf.SetTextColor(30, 30, 30)
+	pdf.CellFormat(0, 9, "Statistics", "", 1, "L", false, 0, "")
+
+	pdf.SetFont("Arial", "", 10)
+	stats := [][2]string{
+		{"Subdomains", fmt.Sprintf("%d", r.Stats.Subdomains)},
+		{"Alive Hosts", fmt.Sprintf("%d", r.Stats.AliveHosts)},
+		{"Web Services", fmt.Sprintf("%d", r.Stats.WebServices)},
+		{"Open Ports", fmt.Sprintf("%d", r.Stats.OpenPorts)},
+		{"URLs", fmt.Sprintf("%d", r.Stats.URLs)},
+		{"JS Files", fmt.Sprintf("%d", r.Stats.JSFiles)},
+		{"Vulnerabilities", fmt.Sprintf("%d", r.Stats.Vulns)},
+		{"Secrets", fmt.Sprintf("%d", r.Stats.Secrets)},
+	}
+	for _, row := range stats {
+		pdf.SetFillColor(245, 245, 245)
+		pdf.CellFormat(80, 7, "  "+row[0], "1", 0, "L", true, 0, "")
+		pdf.CellFormat(30, 7, row[1], "1", 1, "C", true, 0, "")
+	}
+	pdf.Ln(5)
+
+	// Sections
+	for _, s := range r.Sections {
+		if len(s.Findings) == 0 {
+			continue
+		}
+
+		pdf.SetFont("Arial", "B", 12)
+		pdf.SetTextColor(40, 80, 160)
+		pdf.CellFormat(0, 8, fmt.Sprintf("%s (%d)", s.Title, len(s.Findings)), "", 1, "L", false, 0, "")
+
+		pdf.SetFont("Courier", "", 9)
+		pdf.SetTextColor(50, 50, 50)
+
+		// Limit to 50 findings per section in PDF
+		limit := len(s.Findings)
+		if limit > 50 {
+			limit = 50
+		}
+		for _, f := range s.Findings[:limit] {
+			// Truncate long lines
+			if len(f) > 100 {
+				f = f[:97] + "..."
+			}
+			pdf.MultiCell(0, 5, "  "+f, "", "L", false)
+		}
+		if len(s.Findings) > 50 {
+			pdf.SetFont("Arial", "I", 9)
+			pdf.CellFormat(0, 6, fmt.Sprintf("  ... and %d more (see full report)", len(s.Findings)-50), "", 1, "L", false, 0, "")
+		}
+		pdf.Ln(3)
+	}
+
+	return pdf.OutputFileAndClose(path)
+}
