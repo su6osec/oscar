@@ -37,6 +37,7 @@ type Engine struct {
 	stages []Stage
 	stats  *ScanStats
 	db     *DB
+	mu     sync.Mutex // serialises terminal output across parallel goroutines
 }
 
 func NewEngine(cfg *Config, ws *Workspace, db *DB) *Engine {
@@ -98,7 +99,7 @@ func (e *Engine) runStage(ctx context.Context, stage Stage) error {
 	}
 
 	elapsed := time.Since(start).Round(time.Second)
-	pterm.FgGreen.Printf("  ✓ Stage %d complete in %s\n\n", stage.ID, elapsed)
+	pterm.FgGreen.Printf("  ✓ Stage %d complete in %s\n", stage.ID, elapsed)
 	return nil
 }
 
@@ -136,22 +137,20 @@ func (e *Engine) runSequential(ctx context.Context, stage Stage) error {
 
 func (e *Engine) runModule(ctx context.Context, m Module) error {
 	if e.ws.State.IsDone(m.ID) && e.cfg.Resume {
-		count := e.ws.State.GetCount(m.ID)
-		pterm.FgGreen.Printf("  ✓ %-20s [cached: %d]\n", m.Name, count)
+		e.mu.Lock()
+		pterm.FgGreen.Printf("  ✓ %-22s [cached: %d]\n", m.Name, e.ws.State.GetCount(m.ID))
+		e.mu.Unlock()
 		return nil
 	}
 
-	spinner, _ := pterm.DefaultSpinner.
-		WithRemoveWhenDone(false).
-		WithShowTimer(true).
-		Start(fmt.Sprintf("  %-20s", m.Name))
-
 	e.ws.State.SetRunning(m.ID)
-
 	count, err := m.Run(ctx, e.cfg, e.ws)
 
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	if err != nil {
-		spinner.Fail(fmt.Sprintf("  %-20s  ✗ %v", m.Name, err))
+		pterm.Error.Printf("  ✗ %-22s  %v\n", m.Name, err)
 		e.ws.State.SetFailed(m.ID, err.Error())
 		if m.Optional {
 			return nil
@@ -159,8 +158,8 @@ func (e *Engine) runModule(ctx context.Context, m Module) error {
 		return err
 	}
 
-	spinner.Success(fmt.Sprintf("  %-20s  → %s%d results%s", m.Name,
-		pterm.FgCyan.Sprint(""), count, pterm.Reset.Sprint("")))
+	label := fmt.Sprintf("%-22s", m.Name)
+	pterm.Success.Printf("  %s  → %d results\n", label, count)
 	e.ws.State.SetDone(m.ID, count)
 	e.updateStats(m.ID, count)
 	return nil
@@ -199,8 +198,8 @@ func (e *Engine) printSummary() {
 	e.stats.Dirs = CountLines(e.ws.Dirs)
 
 	fmt.Println()
-	pterm.DefaultHeader.WithFullWidth().WithBackgroundStyle(pterm.NewStyle(pterm.BgDarkGray)).
-		Printf(" OSCAR V%s — Scan Complete: %s ", Version, e.cfg.Target)
+	pterm.DefaultHeader.WithBackgroundStyle(pterm.NewStyle(pterm.BgDarkGray)).
+		Printf(" OSCAR v%s — Scan Complete: %s ", Version, e.cfg.Target)
 	fmt.Println()
 
 	td := pterm.TableData{
