@@ -161,6 +161,9 @@ func (e *Engine) runModule(ctx context.Context, m Module) error {
 	defer e.mu.Unlock()
 
 	if err != nil {
+		if ctx.Err() != nil {
+			return err // context canceled — runSequential/runParallel will suppress the print
+		}
 		pterm.Error.Printf("  ✗ %-22s  %v\n", m.Name, err)
 		e.ws.State.SetFailed(m.ID, err.Error())
 		if m.Optional {

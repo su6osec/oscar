@@ -98,6 +98,9 @@ func runCmd(ctx context.Context, outFile string, args ...string) (int, error) {
 	}
 
 	if err := cmd.Start(); err != nil {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
 		return 0, fmt.Errorf("%s not found or failed to start: %w", args[0], err)
 	}
 
@@ -119,7 +122,9 @@ func runCmd(ctx context.Context, outFile string, args ...string) (int, error) {
 		}
 	}
 
-	cmd.Wait() //nolint:errcheck
+	if err := cmd.Wait(); err != nil && ctx.Err() != nil {
+		return count, ctx.Err()
+	}
 	return count, nil
 }
 
