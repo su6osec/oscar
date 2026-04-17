@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -336,35 +337,132 @@ type aiToolConfig struct {
 	Path string
 }
 
-// knownAIConfigs returns config file paths for all known AI tools on the
-// current OS. Paths are expanded for the current user's home directory.
+// knownAIConfigs returns the hardcoded list of well-known AI tool config paths.
 func knownAIConfigs() []aiToolConfig {
 	home, _ := os.UserHomeDir()
 	return []aiToolConfig{
-		{
-			Name: "Claude Desktop",
-			Path: filepath.Join(home, ".config", "claude", "claude_desktop_config.json"),
-		},
-		{
-			Name: "Claude Desktop (Windows)",
-			Path: filepath.Join(home, "AppData", "Roaming", "Claude", "claude_desktop_config.json"),
-		},
-		{
-			Name: "Cursor",
-			Path: filepath.Join(home, ".cursor", "mcp.json"),
-		},
-		{
-			Name: "Windsurf",
-			Path: filepath.Join(home, ".codeium", "windsurf", "mcp_config.json"),
-		},
-		{
-			Name: "VS Code (Cline/Roo)",
-			Path: filepath.Join(home, ".vscode", "mcp.json"),
-		},
-		{
-			Name: "Zed",
-			Path: filepath.Join(home, ".config", "zed", "settings.json"),
-		},
+		// Claude CLI (claude-code, the terminal agent)
+		{Name: "Claude CLI", Path: filepath.Join(home, ".claude", "settings.json")},
+		// Claude Desktop app
+		{Name: "Claude Desktop", Path: filepath.Join(home, ".config", "claude", "claude_desktop_config.json")},
+		{Name: "Claude Desktop (Windows)", Path: filepath.Join(home, "AppData", "Roaming", "Claude", "claude_desktop_config.json")},
+		// Editors / AI tools
+		{Name: "Cursor", Path: filepath.Join(home, ".cursor", "mcp.json")},
+		{Name: "Windsurf", Path: filepath.Join(home, ".codeium", "windsurf", "mcp_config.json")},
+		{Name: "VS Code (Cline/Roo)", Path: filepath.Join(home, ".vscode", "mcp.json")},
+		{Name: "Zed", Path: filepath.Join(home, ".config", "zed", "settings.json")},
+		{Name: "Continue", Path: filepath.Join(home, ".continue", "config.json")},
+	}
+}
+
+// ── Patterns used by the dynamic scanner ─────────────────────────────────────
+
+// mcpFileRe matches JSON filenames that are likely MCP / AI tool config files.
+var mcpFileRe = regexp.MustCompile(`(?i)^(settings|mcp[_-]?config|claude[_-]?desktop[_-]?config|mcp|config)\.json$`)
+
+// aiDirRe matches directory names that belong to an AI coding tool.
+var aiDirRe = regexp.MustCompile(`(?i)(claude|cursor|windsurf|codeium|zed|copilot|cline|continue|aider|cody|tabnine|ghostwriter|supermaven|openai|anthropic|gemini)`)
+
+// inferToolLabel converts a lowercase file path into a human-readable tool name.
+func inferToolLabel(lpath string) string {
+	switch {
+	case strings.Contains(lpath, ".claude"):
+		return "Claude CLI"
+	case strings.Contains(lpath, "claude"):
+		return "Claude Desktop"
+	case strings.Contains(lpath, "cursor"):
+		return "Cursor"
+	case strings.Contains(lpath, "windsurf") || strings.Contains(lpath, "codeium"):
+		return "Windsurf"
+	case strings.Contains(lpath, "zed"):
+		return "Zed"
+	case strings.Contains(lpath, "continue"):
+		return "Continue"
+	case strings.Contains(lpath, "cline"):
+		return "Cline"
+	case strings.Contains(lpath, "copilot"):
+		return "GitHub Copilot"
+	case strings.Contains(lpath, "aider"):
+		return "Aider"
+	case strings.Contains(lpath, "cody"):
+		return "Sourcegraph Cody"
+	case strings.Contains(lpath, "tabnine"):
+		return "Tabnine"
+	default:
+		return ""
+	}
+}
+
+// discoverAIConfigs scans home dotdirs and ~/.config/* up to depth 2 for JSON
+// files that look like AI tool MCP configs. This catches tools whose paths are
+// not in the hardcoded list — e.g. new CLI tools installed to ~/.someai/.
+func discoverAIConfigs(known map[string]bool) []aiToolConfig {
+	home, _ := os.UserHomeDir()
+	var found []aiToolConfig
+
+	// Roots to scan: ~/.config/* and ~/.<dotdir>/*
+	scanRoots := func(root string, onlyDots bool) {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			if onlyDots && !strings.HasPrefix(name, ".") {
+				continue
+			}
+			// Only descend into AI-related directories
+			if !aiDirRe.MatchString(name) {
+				continue
+			}
+			dirPath := filepath.Join(root, name)
+			// Walk up to depth 2 inside this dir
+			scanDir(dirPath, 2, func(path string) {
+				base := filepath.Base(path)
+				if !mcpFileRe.MatchString(base) {
+					return
+				}
+				if known[path] {
+					return // already in hardcoded list
+				}
+				label := inferToolLabel(strings.ToLower(path))
+				if label == "" {
+					label = strings.Trim(name, ".")
+				}
+				found = append(found, aiToolConfig{
+					Name: label + " (auto-detected)",
+					Path: path,
+				})
+				known[path] = true
+			})
+		}
+	}
+
+	scanRoots(home, true)                              // ~/.*
+	scanRoots(filepath.Join(home, ".config"), false)   // ~/.config/*
+
+	return found
+}
+
+// scanDir walks a directory up to maxDepth levels, calling fn for each file.
+func scanDir(root string, maxDepth int, fn func(string)) {
+	if maxDepth < 0 {
+		return
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		full := filepath.Join(root, e.Name())
+		if e.IsDir() {
+			scanDir(full, maxDepth-1, fn)
+		} else {
+			fn(full)
+		}
 	}
 }
 
@@ -395,13 +493,23 @@ func printAgentSetup() {
 	// ── Step 3: detect + patch ───────────────────────────────────────────────
 	pterm.DefaultSection.Println("Step 3 — Detected AI tool config files")
 
-	found := []aiToolConfig{}
-	notFound := []aiToolConfig{}
+	// Build set of known paths so the dynamic scanner can skip duplicates
+	seenPaths := make(map[string]bool)
+	var found, notFound []aiToolConfig
+
 	for _, cfg := range knownAIConfigs() {
+		seenPaths[cfg.Path] = true
 		if _, err := os.Stat(cfg.Path); err == nil {
 			found = append(found, cfg)
 		} else {
 			notFound = append(notFound, cfg)
+		}
+	}
+
+	// Dynamic scan: find config files in AI-related dotdirs not in hardcoded list
+	for _, cfg := range discoverAIConfigs(seenPaths) {
+		if _, err := os.Stat(cfg.Path); err == nil {
+			found = append(found, cfg)
 		}
 	}
 
@@ -410,25 +518,23 @@ func printAgentSetup() {
 		fmt.Println()
 		pterm.Info.Println("Known locations (create the file if missing):")
 		for _, cfg := range notFound {
-			fmt.Printf("  %-26s  %s\n", cfg.Name, pterm.FgGray.Sprint(cfg.Path))
+			fmt.Printf("  %-30s  %s\n", cfg.Name, pterm.FgGray.Sprint(cfg.Path))
 		}
 	} else {
 		for _, cfg := range found {
-			already := configHasOscar(cfg.Path)
-			if already {
-				fmt.Printf("  %s  %-26s  %s\n",
-					pterm.FgGreen.Sprint("✓ already configured"),
+			if configHasOscar(cfg.Path) {
+				fmt.Printf("  %s  %-32s  %s\n",
+					pterm.FgGreen.Sprint("✓ configured"),
 					cfg.Name,
 					pterm.FgGray.Sprint(cfg.Path))
 			} else {
-				fmt.Printf("  %s  %-26s  %s\n",
-					pterm.FgYellow.Sprint("⚡ needs oscar entry "),
+				fmt.Printf("  %s  %-32s  %s\n",
+					pterm.FgYellow.Sprint("⚡ needs entry"),
 					cfg.Name,
 					pterm.FgGray.Sprint(cfg.Path))
 			}
 		}
 
-		// Auto-patch any file that exists and doesn't yet have oscar
 		fmt.Println()
 		patched := 0
 		for _, cfg := range found {
@@ -436,10 +542,10 @@ func printAgentSetup() {
 				continue
 			}
 			if err := patchMCPConfig(cfg.Path, oscarBin); err != nil {
-				pterm.Warning.Printf("  Could not auto-patch %s: %v\n", cfg.Name, err)
-				pterm.Info.Printf("  Add the JSON block above manually to: %s\n", cfg.Path)
+				pterm.Warning.Printf("  Auto-patch failed for %s: %v\n", cfg.Name, err)
+				pterm.Info.Printf("  Add manually to: %s\n", cfg.Path)
 			} else {
-				pterm.Success.Printf("  Auto-patched: %s\n", cfg.Path)
+				pterm.Success.Printf("  Patched: %s\n", cfg.Path)
 				patched++
 			}
 		}
