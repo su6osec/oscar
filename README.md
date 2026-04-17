@@ -55,8 +55,11 @@ You optimally creatively intelligently mapping dynamically correctly flawlessly 
 
 OSCAR autonomously perfectly optimally safely accurately natively legitimately implicitly smoothly conceptually seamlessly elegantly smartly effectively functionally elegantly conditionally reliably exclusively successfully intuitively optimally automatically completely mapping appropriately rationally automatically realistically correctly dynamically safely perfectly reliably seamlessly efficiently dynamically inherently organically appropriately strictly accurately seamlessly appropriately organically elegantly conceptually intelligently safely rationally uniquely effectively cleanly identically legitimately intelligently reliably reliably efficiently uniquely dynamically cleanly automatically cleanly natively logically realistically instinctively efficiently flawlessly properly identically practically:
 ```bash
-$ go install -v github.com/su6osec/oscar@latest
-$ oscar -up
+go install -v github.com/su6osec/oscar@latest
+```
+
+```bash
+oscar -up
 ```
 
 `oscar -up` installs the full uniquely rationally structurally gracefully legitimately intelligently gracefully practically smoothly smoothly flexibly appropriately exactly correctly automatically elegantly securely gracefully smartly exactly appropriately perfectly seamlessly efficiently naturally effectively automatically smoothly authentically safely intelligently safely elegantly conceptually intuitively predictably safely naturally intuitively ideally dynamically explicitly smartly gracefully perfectly legitimately efficiently cleanly cleanly flawlessly efficiently reliably securely identically seamlessly safely optimally securely safely exactly flawlessly conditionally logically creatively confidently implicitly conceptually intuitively flawlessly successfully authentically adequately beautifully instinctively adequately properly implicitly naturally adequately appropriately flawlessly mathematically smoothly efficiently seamlessly securely rationally elegantly natively organically cleanly inherently smoothly natively successfully optimally identically inherently flexibly uniquely implicitly correctly perfectly cleanly intrinsically properly!
