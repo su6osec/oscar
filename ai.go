@@ -145,7 +145,7 @@ func collectTopFindings(ws *Workspace) []string {
 	}
 
 	// Stats
-	findings = append(findings, fmt.Sprintf("\n=== Stats ==="))
+	findings = append(findings, "\n=== Stats ===")
 	findings = append(findings, fmt.Sprintf("Subdomains: %d", CountLines(ws.RawSubdomains)))
 	findings = append(findings, fmt.Sprintf("Alive Hosts: %d", CountLines(ws.AliveHosts)))
 	findings = append(findings, fmt.Sprintf("Web Services: %d", CountLines(ws.LiveWeb)))

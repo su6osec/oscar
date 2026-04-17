@@ -210,7 +210,7 @@ func writePDF(path string, r *ScanReport) error {
 	// Title
 	pdf.SetFont("Arial", "B", 18)
 	pdf.SetTextColor(30, 30, 30)
-	pdf.CellFormat(0, 12, fmt.Sprintf("OSCAR Reconnaissance Report"), "", 1, "C", false, 0, "")
+	pdf.CellFormat(0, 12, "OSCAR Reconnaissance Report", "", 1, "C", false, 0, "")
 
 	pdf.SetFont("Arial", "", 11)
 	pdf.SetTextColor(80, 80, 80)

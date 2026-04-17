@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -268,59 +269,120 @@ func checkOllama() {
 	}
 	pterm.FgGray.Printf("  Found: %s\n", ollamaPath)
 
-	// Detect optimal model
 	model := SelectAIModel()
 	ramMB := memory.TotalMemory() / (1024 * 1024)
-	pterm.Info.Printf("  System RAM: ~%d MB  →  model: %s\n", ramMB, pterm.FgLightCyan.Sprint(model))
+	pterm.Info.Printf("  System RAM: ~%d MB  →  optimal model: %s\n", ramMB, pterm.FgLightCyan.Sprint(model))
 
-	// Check if daemon is reachable
+	// Check daemon
 	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Get("http://localhost:11434/api/tags")
 	if err != nil {
-		pterm.Warning.Println("  Ollama daemon is not running.")
-		pterm.Info.Println("  Start it:      ollama serve")
+		pterm.Warning.Println("  Ollama daemon is not running — model check skipped.")
+		pterm.Info.Println("  Start daemon:  ollama serve")
 		pterm.Info.Printf("  Pull model:    ollama pull %s\n", model)
 		return
 	}
 	resp.Body.Close()
 
-	// Check if model already downloaded
-	listOut, _ := exec.Command("ollama", "list").Output()
-	modelBase := strings.Split(model, ":")[0]
-	if strings.Contains(string(listOut), modelBase) {
-		pterm.Success.Printf("  Model %s already downloaded\n", model)
+	if ollamaModelInstalled(model) {
+		pterm.Success.Printf("  Model %s is already installed — nothing to do.\n", model)
 		return
 	}
 
-	// Pull the model
-	pterm.Info.Printf("  Pulling %s  (grab a coffee, this may take a while)...\n", model)
+	pterm.Info.Printf("  Pulling %s  (may take a few minutes)...\n", model)
 	pullCmd := exec.Command("ollama", "pull", model)
 	pullCmd.Stdout = os.Stdout
 	pullCmd.Stderr = os.Stderr
 	if err := pullCmd.Run(); err != nil {
 		pterm.Warning.Printf("  Pull failed: %v\n", err)
-		pterm.Info.Printf("  Manual pull: ollama pull %s\n", model)
+		pterm.Info.Printf("  Retry manually: ollama pull %s\n", model)
 		return
 	}
-	pterm.Success.Printf("  Model %s ready\n", model)
+	pterm.Success.Printf("  Model %s ready.\n", model)
 }
 
+// ollamaModelInstalled returns true if the given model tag is already present.
+// It checks exact tag first, then falls back to base-name matching so that
+// e.g. "phi3.5:latest" satisfies a request for "phi3.5:mini".
+func ollamaModelInstalled(model string) bool {
+	out, err := exec.Command("ollama", "list").Output()
+	if err != nil {
+		return false
+	}
+	list := string(out)
+	// Exact match first
+	if strings.Contains(list, model) {
+		return true
+	}
+	// Base-name fallback: "phi3.5:mini" → look for "phi3.5"
+	base := strings.SplitN(model, ":", 2)[0]
+	for _, line := range strings.Split(list, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if strings.HasPrefix(fields[0], base+":") || fields[0] == base {
+			return true
+		}
+	}
+	return false
+}
 
 // ─── Agent / MCP config ───────────────────────────────────────────────────────
 
-// printAgentSetup prints clear, step-by-step MCP configuration instructions.
+// aiToolConfig describes a known AI tool's MCP config file location.
+type aiToolConfig struct {
+	Name string
+	Path string
+}
+
+// knownAIConfigs returns config file paths for all known AI tools on the
+// current OS. Paths are expanded for the current user's home directory.
+func knownAIConfigs() []aiToolConfig {
+	home, _ := os.UserHomeDir()
+	return []aiToolConfig{
+		{
+			Name: "Claude Desktop",
+			Path: filepath.Join(home, ".config", "claude", "claude_desktop_config.json"),
+		},
+		{
+			Name: "Claude Desktop (Windows)",
+			Path: filepath.Join(home, "AppData", "Roaming", "Claude", "claude_desktop_config.json"),
+		},
+		{
+			Name: "Cursor",
+			Path: filepath.Join(home, ".cursor", "mcp.json"),
+		},
+		{
+			Name: "Windsurf",
+			Path: filepath.Join(home, ".codeium", "windsurf", "mcp_config.json"),
+		},
+		{
+			Name: "VS Code (Cline/Roo)",
+			Path: filepath.Join(home, ".vscode", "mcp.json"),
+		},
+		{
+			Name: "Zed",
+			Path: filepath.Join(home, ".config", "zed", "settings.json"),
+		},
+	}
+}
+
+// printAgentSetup detects installed AI tools and provides targeted, auto-patch
+// MCP configuration instructions for each.
 func printAgentSetup() {
 	oscarBin := resolveOscarBinary()
 
 	pterm.DefaultHeader.WithFullWidth().Println("  OSCAR  ·  Agentic MCP Setup  ")
 	fmt.Println()
 
-	pterm.DefaultSection.Println("Step 1 — Make sure OSCAR is in your PATH")
-	fmt.Printf("  Binary location: %s\n\n", pterm.FgLightCyan.Sprint(oscarBin))
+	// ── Step 1: binary path ──────────────────────────────────────────────────
+	pterm.DefaultSection.Println("Step 1 — OSCAR binary location")
+	fmt.Printf("  %s\n\n", pterm.FgLightCyan.Sprint(oscarBin))
 
-	pterm.DefaultSection.Println("Step 2 — Add this block to your AI tool config")
-
-	config := fmt.Sprintf(`{
+	// ── Step 2: MCP JSON snippet ─────────────────────────────────────────────
+	pterm.DefaultSection.Println("Step 2 — MCP configuration block")
+	mcpSnippet := fmt.Sprintf(`{
   "mcpServers": {
     "oscar": {
       "command": "%s",
@@ -328,34 +390,127 @@ func printAgentSetup() {
     }
   }
 }`, oscarBin)
+	pterm.DefaultBox.WithTitle("JSON block to add / merge").Println(mcpSnippet)
 
-	pterm.DefaultBox.WithTitle("MCP Config JSON").Println(config)
+	// ── Step 3: detect + patch ───────────────────────────────────────────────
+	pterm.DefaultSection.Println("Step 3 — Detected AI tool config files")
 
-	pterm.DefaultSection.Println("Step 3 — Config file locations")
-
-	home, _ := os.UserHomeDir()
-
-	locations := []struct{ label, path string }{
-		{"Claude Desktop (Linux/Mac)", filepath.Join(home, ".config", "claude", "claude_desktop_config.json")},
-		{"Claude Desktop (Windows)", filepath.Join(home, "AppData", "Roaming", "Claude", "claude_desktop_config.json")},
-		{"Cursor", filepath.Join(home, ".cursor", "mcp.json")},
-		{"Windsurf", filepath.Join(home, ".codeium", "windsurf", "mcp_config.json")},
+	found := []aiToolConfig{}
+	notFound := []aiToolConfig{}
+	for _, cfg := range knownAIConfigs() {
+		if _, err := os.Stat(cfg.Path); err == nil {
+			found = append(found, cfg)
+		} else {
+			notFound = append(notFound, cfg)
+		}
 	}
 
-	for _, loc := range locations {
-		exists := ""
-		if _, err := os.Stat(loc.path); err == nil {
-			exists = pterm.FgGreen.Sprint(" ← exists")
+	if len(found) == 0 {
+		pterm.Warning.Println("No AI tool config files detected on this system.")
+		fmt.Println()
+		pterm.Info.Println("Known locations (create the file if missing):")
+		for _, cfg := range notFound {
+			fmt.Printf("  %-26s  %s\n", cfg.Name, pterm.FgGray.Sprint(cfg.Path))
 		}
-		fmt.Printf("  %-28s %s%s\n", loc.label, pterm.FgGray.Sprint(loc.path), exists)
+	} else {
+		for _, cfg := range found {
+			already := configHasOscar(cfg.Path)
+			if already {
+				fmt.Printf("  %s  %-26s  %s\n",
+					pterm.FgGreen.Sprint("✓ already configured"),
+					cfg.Name,
+					pterm.FgGray.Sprint(cfg.Path))
+			} else {
+				fmt.Printf("  %s  %-26s  %s\n",
+					pterm.FgYellow.Sprint("⚡ needs oscar entry "),
+					cfg.Name,
+					pterm.FgGray.Sprint(cfg.Path))
+			}
+		}
+
+		// Auto-patch any file that exists and doesn't yet have oscar
+		fmt.Println()
+		patched := 0
+		for _, cfg := range found {
+			if configHasOscar(cfg.Path) {
+				continue
+			}
+			if err := patchMCPConfig(cfg.Path, oscarBin); err != nil {
+				pterm.Warning.Printf("  Could not auto-patch %s: %v\n", cfg.Name, err)
+				pterm.Info.Printf("  Add the JSON block above manually to: %s\n", cfg.Path)
+			} else {
+				pterm.Success.Printf("  Auto-patched: %s\n", cfg.Path)
+				patched++
+			}
+		}
+		if patched > 0 {
+			fmt.Println()
+			pterm.Info.Println("Restart your AI app to load the new MCP server.")
+		}
 	}
 
 	fmt.Println()
-	pterm.Info.Println("Paste the JSON above into the mcpServers section of whichever file applies, then restart your AI app.")
+	pterm.Info.Printf("Docs: https://github.com/su6osec/oscar\n")
+}
+
+// configHasOscar returns true if the JSON file already contains an "oscar"
+// entry under mcpServers.
+func configHasOscar(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		// Not valid JSON yet — treat as unconfigured
+		return false
+	}
+	servers, ok := cfg["mcpServers"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, exists := servers["oscar"]
+	return exists
+}
+
+// patchMCPConfig merges the oscar MCP entry into an existing JSON config file.
+// It creates the file (with an empty JSON object) if it doesn't exist yet.
+func patchMCPConfig(path string, oscarBin string) error {
+	// Read existing content (or start with an empty object)
+	var cfg map[string]any
+	data, err := os.ReadFile(path)
+	if err != nil || len(bytes.TrimSpace(data)) == 0 {
+		cfg = make(map[string]any)
+	} else if err := json.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("existing config is not valid JSON: %w", err)
+	}
+
+	// Ensure mcpServers key exists
+	servers, ok := cfg["mcpServers"].(map[string]any)
+	if !ok {
+		servers = make(map[string]any)
+		cfg["mcpServers"] = servers
+	}
+
+	// Add oscar entry
+	servers["oscar"] = map[string]any{
+		"command": oscarBin,
+		"args":    []string{"-mcp-server"},
+	}
+
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(out, '\n'), 0644)
 }
 
 func resolveOscarBinary() string {
-	// 1. Check GOPATH/bin/oscar
 	gopath := os.Getenv("GOPATH")
 	if gopath == "" {
 		home, _ := os.UserHomeDir()
@@ -365,10 +520,8 @@ func resolveOscarBinary() string {
 	if _, err := os.Stat(candidate); err == nil {
 		return candidate
 	}
-	// 2. Check PATH
 	if p, err := exec.LookPath("oscar"); err == nil {
 		return p
 	}
-	// 3. Fallback
 	return "oscar"
 }
