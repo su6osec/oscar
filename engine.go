@@ -51,7 +51,7 @@ func (e *Engine) Run(ctx context.Context) error {
 
 	for _, stage := range e.stages {
 		if stage.ID < e.cfg.Stage {
-			pterm.FgGray.Printf("  ○ Stage %d: %-25s [skipped — resume]\n", stage.ID, stage.Name)
+			pterm.FgGray.Printf("  ○ Stage %d: %-25s [skipped — -stage %d]\n", stage.ID, stage.Name, e.cfg.Stage)
 			continue
 		}
 
@@ -112,7 +112,9 @@ func (e *Engine) runParallel(ctx context.Context, stage Stage) error {
 		go func(m Module) {
 			defer wg.Done()
 			if err := e.runModule(ctx, m); err != nil && !m.Optional {
-				errCh <- err
+				if ctx.Err() == nil { // don't propagate errors caused by Ctrl+C / context cancel
+					errCh <- err
+				}
 			}
 		}(mod)
 	}
@@ -129,6 +131,9 @@ func (e *Engine) runParallel(ctx context.Context, stage Stage) error {
 func (e *Engine) runSequential(ctx context.Context, stage Stage) error {
 	for _, m := range stage.Modules {
 		if err := e.runModule(ctx, m); err != nil && !m.Optional {
+			if ctx.Err() != nil {
+				return nil // interrupted by Ctrl+C, exit gracefully
+			}
 			return err
 		}
 	}

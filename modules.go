@@ -280,28 +280,48 @@ func runAlterx(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
 	return merged, nil
 }
 
+// hostsInput returns ws.AliveHosts when it exists, otherwise writes cfg.Target
+// to a bootstrap file so stage 3 modules work when -stage 3 is used directly.
+func hostsInput(cfg *Config, ws *Workspace) string {
+	if FileExists(ws.AliveHosts) {
+		return ws.AliveHosts
+	}
+	boot := filepath.Join(ws.Recon, "bootstrap_hosts.txt")
+	os.WriteFile(boot, []byte(cfg.Target+"\n"), 0644) //nolint:errcheck
+	return boot
+}
+
+// liveURLsInput returns the live-URLs file when it exists, otherwise bootstraps
+// with the target URL so stage 4/5 modules work standalone.
+func liveURLsInput(cfg *Config, ws *Workspace) string {
+	liveURLs := filepath.Join(ws.Recon, "live_urls.txt")
+	if FileExists(liveURLs) {
+		return liveURLs
+	}
+	if FileExists(ws.LiveWeb) {
+		return ws.LiveWeb
+	}
+	boot := filepath.Join(ws.Recon, "bootstrap_urls.txt")
+	os.WriteFile(boot, []byte("https://"+cfg.Target+"\n"), 0644) //nolint:errcheck
+	return boot
+}
+
 // ─── Stage 3: Service Mapping ─────────────────────────────────────────────────
 
 func runNaabu(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
-	if !FileExists(ws.AliveHosts) {
-		return 0, nil
-	}
 	tctx, cancel := withTimeout(ctx, cfg)
 	defer cancel()
 	return runCmd(tctx, ws.OpenPorts,
-		FindTool("naabu"), "-silent", "-l", ws.AliveHosts,
+		FindTool("naabu"), "-silent", "-l", hostsInput(cfg, ws),
 		"-top-ports", "1000", "-threads", fmt.Sprintf("%d", cfg.Threads))
 }
 
 func runHttpx(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
-	if !FileExists(ws.AliveHosts) {
-		return 0, nil
-	}
 	tctx, cancel := withTimeout(ctx, cfg)
 	defer cancel()
 
 	n, err := runCmd(tctx, ws.LiveWeb,
-		FindTool("httpx"), "-silent", "-l", ws.AliveHosts,
+		FindTool("httpx"), "-silent", "-l", hostsInput(cfg, ws),
 		"-title", "-tech-detect", "-status-code", "-follow-redirects",
 		"-threads", fmt.Sprintf("%d", cfg.Threads))
 	if err != nil {
@@ -321,13 +341,10 @@ func runHttpx(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
 }
 
 func runTlsx(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
-	if !FileExists(ws.AliveHosts) {
-		return 0, nil
-	}
 	tctx, cancel := withTimeout(ctx, cfg)
 	defer cancel()
 	return runCmd(tctx, ws.TLSInfo,
-		FindTool("tlsx"), "-silent", "-l", ws.AliveHosts, "-cn", "-san")
+		FindTool("tlsx"), "-silent", "-l", hostsInput(cfg, ws), "-cn", "-san")
 }
 
 // ─── Stage 4: Content Discovery ───────────────────────────────────────────────
@@ -340,30 +357,19 @@ func runGau(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
 }
 
 func runKatana(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
-	liveURLs := filepath.Join(ws.Recon, "live_urls.txt")
-	if !FileExists(liveURLs) {
-		if !FileExists(ws.LiveWeb) {
-			return 0, nil
-		}
-		liveURLs = ws.LiveWeb
-	}
 	tctx, cancel := withTimeout(ctx, cfg)
 	defer cancel()
 	return runCmd(tctx, ws.CrawledURLs,
-		FindTool("katana"), "-silent", "-l", liveURLs,
+		FindTool("katana"), "-silent", "-l", liveURLsInput(cfg, ws),
 		"-depth", "3", "-js-crawl", "-known-files", "all",
 		"-concurrency", fmt.Sprintf("%d", cfg.Threads))
 }
 
 func runGetJS(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
-	liveURLs := filepath.Join(ws.Recon, "live_urls.txt")
-	if !FileExists(liveURLs) {
-		return 0, nil
-	}
 	tctx, cancel := withTimeout(ctx, cfg)
 	defer cancel()
 
-	// getJS reads URLs from file and finds .js files
+	liveURLs := liveURLsInput(cfg, ws)
 	n, err := runCmd(tctx, ws.JSFiles,
 		FindTool("getJS"), "-input", liveURLs, "--complete")
 	if err != nil {
@@ -382,11 +388,6 @@ func runGetJS(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
 }
 
 func runFfuf(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
-	liveURLs := filepath.Join(ws.Recon, "live_urls.txt")
-	if !FileExists(liveURLs) {
-		return 0, nil
-	}
-
 	wordlist := filepath.Join(FindSecLists(), "Discovery", "Web-Content", "raft-medium-directories.txt")
 	if !FileExists(wordlist) {
 		wordlist = filepath.Join(FindSecLists(), "Discovery", "Web-Content", "common.txt")
@@ -413,17 +414,10 @@ func runFfuf(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
 // ─── Stage 5: Vulnerability Analysis ─────────────────────────────────────────
 
 func runNuclei(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
-	liveURLs := filepath.Join(ws.Recon, "live_urls.txt")
-	if !FileExists(liveURLs) {
-		liveURLs = ws.LiveWeb
-	}
-	if !FileExists(liveURLs) {
-		return 0, nil
-	}
 	tctx, cancel := withTimeout(ctx, cfg)
 	defer cancel()
 	return runCmd(tctx, ws.NucleiHits,
-		FindTool("nuclei"), "-silent", "-l", liveURLs,
+		FindTool("nuclei"), "-silent", "-l", liveURLsInput(cfg, ws),
 		"-severity", "low,medium,high,critical",
 		"-c", fmt.Sprintf("%d", cfg.Threads))
 }
@@ -434,7 +428,6 @@ func runNucleiJS(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
 	}
 	tctx, cancel := withTimeout(ctx, cfg)
 	defer cancel()
-
 	outFile := filepath.Join(ws.Vulns, "js_secrets.txt")
 	return runCmd(tctx, outFile,
 		FindTool("nuclei"), "-silent", "-l", ws.JSFiles,
@@ -442,12 +435,13 @@ func runNucleiJS(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
 }
 
 func runDalfox(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
-	if !FileExists(ws.AllURLs) {
-		return 0, nil
+	urlsFile := ws.AllURLs
+	if !FileExists(urlsFile) {
+		urlsFile = liveURLsInput(cfg, ws)
 	}
 	tctx, cancel := withTimeout(ctx, cfg)
 	defer cancel()
 	return runCmd(tctx, ws.XSSHits,
-		FindTool("dalfox"), "file", ws.AllURLs,
+		FindTool("dalfox"), "file", urlsFile,
 		"--silence", "--no-spinner", "--skip-bav")
 }
