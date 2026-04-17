@@ -147,7 +147,6 @@ func printBanner() {
 }
 
 func printUsage() {
-	printBanner()
 	pterm.DefaultHeader.WithFullWidth().Println("  Usage  ")
 
 	fmt.Println()

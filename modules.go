@@ -25,7 +25,7 @@ func buildPipeline(_ *Config, _ *Workspace) []Stage {
 			Modules: []Module{
 				{ID: "subfinder", Name: "Subfinder", Run: runSubfinder},
 				{ID: "assetfinder", Name: "Assetfinder", Optional: true, Run: runAssetfinder},
-				{ID: "crtsh", Name: "Crt.sh", Run: runCrtsh},
+				{ID: "crtsh", Name: "Crt.sh", Optional: true, Run: runCrtsh},
 			},
 			PostRun: func(c *Config, w *Workspace) error {
 				n, err := MergeDedup(w.RawSubdomains, w.SubfinderOut, w.AssetfinderOut, w.CrtshOut)
@@ -182,25 +182,29 @@ func runCrtsh(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return 0, err
+		return 0, nil
 	}
 	req.Header.Set("User-Agent", "OSCAR/"+Version)
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, nil // network error, skip silently
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return 0, nil // rate-limited or captcha, skip silently
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, err
+		return 0, nil
 	}
 
 	var entries []crtEntry
 	if err := json.Unmarshal(body, &entries); err != nil {
-		return 0, fmt.Errorf("crt.sh parse: %w", err)
+		return 0, nil // HTML response (bot protection), skip silently
 	}
 
 	seen := make(map[string]bool)

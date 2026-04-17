@@ -88,14 +88,16 @@ func (e *Engine) runStage(ctx context.Context, stage Stage) error {
 		err = e.runSequential(ctx, stage)
 	}
 
-	if err != nil {
-		return err
-	}
-
+	// Always run PostRun (merge/dedup) even if some optional modules failed.
+	// This ensures stage 1 subdomains are merged even when crt.sh is skipped.
 	if stage.PostRun != nil {
 		if pErr := stage.PostRun(e.cfg, e.ws); pErr != nil {
 			pterm.Warning.Printf("post-stage cleanup: %v\n", pErr)
 		}
+	}
+
+	if err != nil {
+		return err
 	}
 
 	elapsed := time.Since(start).Round(time.Second)
@@ -141,11 +143,15 @@ func (e *Engine) runSequential(ctx context.Context, stage Stage) error {
 }
 
 func (e *Engine) runModule(ctx context.Context, m Module) error {
-	if e.ws.State.IsDone(m.ID) && e.cfg.Resume {
-		e.mu.Lock()
-		pterm.FgGreen.Printf("  ✓ %-22s [cached: %d]\n", m.Name, e.ws.State.GetCount(m.ID))
-		e.mu.Unlock()
-		return nil
+	if e.cfg.Resume {
+		if e.ws.State.IsDone(m.ID) {
+			e.mu.Lock()
+			pterm.FgGreen.Printf("  ✓ %-22s [cached: %d]\n", m.Name, e.ws.State.GetCount(m.ID))
+			e.mu.Unlock()
+			return nil
+		}
+		// A "Running" state means the previous run was interrupted mid-module; reset it.
+		e.ws.State.ResetIfStale(m.ID)
 	}
 
 	e.ws.State.SetRunning(m.ID)

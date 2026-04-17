@@ -68,6 +68,18 @@ func (s *ScanState) SetFailed(id string, errStr string) {
 	s.set(id, StatusFailed, 0, errStr)
 }
 
+// ResetIfStale resets a module stuck in StatusRunning back to StatusPending
+// so it gets re-executed on resume instead of being treated as in-progress.
+func (s *ScanState) ResetIfStale(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m, ok := s.Modules[id]; ok && m.Status == StatusRunning {
+		s.Modules[id] = &ModuleState{Status: StatusPending}
+		data, _ := json.MarshalIndent(s, "", "  ")
+		os.WriteFile(s.path, data, 0644) //nolint:errcheck
+	}
+}
+
 func (s *ScanState) set(id string, status ModuleStatus, count int, errStr string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

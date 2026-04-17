@@ -13,6 +13,7 @@ import (
 
 	"github.com/pbnjay/memory"
 	"github.com/pterm/pterm"
+	"golang.org/x/term"
 )
 
 const ollamaBase = "http://localhost:11434"
@@ -102,13 +103,27 @@ func AITriage(ws *Workspace, target string, reportPath string) {
 
 	prompt := buildTriagePrompt(target, findings)
 
-	spinner, _ := pterm.DefaultSpinner.Start("AI analyzing findings...")
+	isTTY := isTerminal(os.Stdout)
+	var spinner *pterm.SpinnerPrinter
+	if isTTY {
+		spinner, _ = pterm.DefaultSpinner.Start("AI analyzing findings...")
+	} else {
+		pterm.Info.Println("AI analyzing findings...")
+	}
 	response, err := OllamaGenerate(model, prompt)
 	if err != nil {
-		spinner.Fail(fmt.Sprintf("AI triage failed: %v", err))
+		if spinner != nil {
+			spinner.Fail(fmt.Sprintf("AI triage failed: %v", err))
+		} else {
+			pterm.Error.Printf("AI triage failed: %v\n", err)
+		}
 		return
 	}
-	spinner.Success("AI triage complete")
+	if spinner != nil {
+		spinner.Success("AI triage complete")
+	} else {
+		pterm.Success.Println("AI triage complete")
+	}
 
 	// Append AI section to report
 	aiSection := fmt.Sprintf("\n\n## AI Security Triage\n\n**Model:** %s  \n**Date:** %s\n\n%s\n",
@@ -168,6 +183,10 @@ Provide:
 4. Quick wins (easy vulnerabilities to confirm)
 
 Be concise and technical. Focus on actionable insights.`, target, data)
+}
+
+func isTerminal(f *os.File) bool {
+	return term.IsTerminal(int(f.Fd()))
 }
 
 func readFirstN(path string, n int) []string {
