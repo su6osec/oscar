@@ -88,11 +88,13 @@ export PATH="$PATH:$HOME/go/bin"
 
 ### Option 1 — Install from source (recommended)
 
+**Step 1 — Install the OSCAR binary**
 ```bash
-# Step 1: install the oscar binary
 go install -v github.com/su6osec/oscar@latest
+```
 
-# Step 2: install all 30+ tools, wordlists, and the AI model for your hardware
+**Step 2 — Install all 30+ tools, wordlists, and the AI model for your hardware**
+```bash
 oscar -up
 ```
 
@@ -144,25 +146,25 @@ oscar -v
 
 ```bash
 # Full scan with all defaults
-oscar -t tesla.com
+oscar -t target.com
 
 # Fast mode — skip slow tools, ~3× faster
-oscar -t tesla.com -fast
+oscar -t target.com -fast
 
 # Save report as PDF
-oscar -t tesla.com -f pdf
+oscar -t target.com -f pdf
 
 # More threads, longer timeout for large targets
-oscar -t tesla.com -threads 100 -timeout 45
+oscar -t target.com -threads 100 -timeout 45
 
 # Resume a previous scan (skip completed stages)
-oscar -t tesla.com -resume
+oscar -t target.com -resume
 
 # Skip AI triage
-oscar -t tesla.com -no-ai
+oscar -t target.com -no-ai
 
 # Start from stage 3 (skip passive discovery and DNS)
-oscar -t tesla.com -stage 3
+oscar -t target.com -stage 3
 ```
 
 ---
@@ -174,7 +176,7 @@ OSCAR has three modes that trade thoroughness for speed:
 ### ⚡ Fast Mode (`-fast`)
 Skips the three slowest optional tools: **alterx** (DNS permutations), **ffuf** (directory brute-force), and **dalfox** (XSS scanning).
 
-On a large target like `liquidweb.com` this reduces scan time from **90+ minutes to ~25 minutes** without missing the most critical findings.
+On a large target this reduces scan time from **90+ minutes to ~25 minutes** without missing the most critical findings.
 
 ```bash
 oscar -t target.com -fast
@@ -206,7 +208,7 @@ Best for: thorough engagements, large scope programs, when time is not a constra
 
 ```
 Scanning:
-  -t <domain>    Target domain (required)                e.g. tesla.com
+  -t <domain>    Target domain (required)                e.g. target.com
   -threads <n>   Concurrent threads per module           [default: 50]
   -timeout <n>   Per-module timeout in minutes           [default: 30]
   -stage <n>     Start from a specific stage (1–5)       [default: 1]
@@ -296,7 +298,7 @@ OSCAR v2.0 features a fully animated terminal interface:
 │  Vulnerabilities    │ 3      │ ▲ REVIEW        │
 │  Secrets Found      │ 0      │ ● NONE          │
 └────────────────────────────────────────────────┘
-  Reports → reports/tesla.com   [total: 28m14s]
+  Reports → reports/target.com   [total: 28m14s]
 ```
 
 ---
@@ -427,29 +429,29 @@ reports/
 ### Basic full scan
 
 ```bash
-oscar -t hackerone.com
+oscar -t target.com
 ```
 
 ### Fast scan, PDF report
 
 ```bash
-oscar -t bugcrowd.com -fast -f pdf
+oscar -t target.com -fast -f pdf
 ```
 
 ### High-thread scan for large targets
 
 ```bash
-oscar -t large-company.com -threads 100 -timeout 60
+oscar -t target.com -threads 100 -timeout 60
 ```
 
 ### Resume an interrupted scan
 
 ```bash
 # First run was interrupted
-oscar -t tesla.com -threads 80
+oscar -t target.com -threads 80
 
 # Resume from where it left off
-oscar -t tesla.com -threads 80 -resume
+oscar -t target.com -threads 80 -resume
 ```
 
 ### Skip AI, get JSON output for scripting
