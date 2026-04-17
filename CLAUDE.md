@@ -25,6 +25,8 @@ go install -v github.com/su6osec/oscar@latest
 ./oscar -t example.com -resume              # resume a previous scan
 ./oscar -t example.com -stage 3             # start from stage 3
 ./oscar -t example.com -no-ai              # skip Ollama AI triage
+./oscar -t example.com -fast               # fast mode: skip alterx/ffuf/dalfox (~3× faster)
+./oscar -t example.com -deep               # deep mode: enable all tools + gau --subs
 
 # MCP config for Claude/Cursor
 ./oscar -mcp

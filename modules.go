@@ -16,7 +16,37 @@ import (
 
 // ─── Pipeline Builder ──────────────────────────────────────────────────────────
 
-func buildPipeline(_ *Config, _ *Workspace) []Stage {
+func buildPipeline(cfg *Config, _ *Workspace) []Stage {
+	// In fast mode skip the three slowest optional tools.
+	// In deep mode (or default) include alterx; ffuf and dalfox stay optional.
+	withAlterx := !cfg.Fast
+	withFfuf := !cfg.Fast
+	withDalfox := !cfg.Fast
+
+	stage2Mods := []Module{
+		{ID: "dnsx", Name: "Dnsx", Run: runDnsx},
+	}
+	if withAlterx {
+		stage2Mods = append(stage2Mods, Module{ID: "alterx", Name: "Alterx", Optional: true, Run: runAlterx})
+	}
+
+	stage4Mods := []Module{
+		{ID: "gau", Name: "GAU", Run: runGau},
+		{ID: "katana", Name: "Katana", Run: runKatana},
+		{ID: "getjs", Name: "GetJS", Optional: true, Run: runGetJS},
+	}
+	if withFfuf {
+		stage4Mods = append(stage4Mods, Module{ID: "ffuf", Name: "Ffuf", Optional: true, Run: runFfuf})
+	}
+
+	stage5Mods := []Module{
+		{ID: "nuclei", Name: "Nuclei", Run: runNuclei},
+		{ID: "nuclei-js", Name: "Nuclei JS", Optional: true, Run: runNucleiJS},
+	}
+	if withDalfox {
+		stage5Mods = append(stage5Mods, Module{ID: "dalfox", Name: "Dalfox", Optional: true, Run: runDalfox})
+	}
+
 	return []Stage{
 		{
 			ID:       1,
@@ -39,10 +69,7 @@ func buildPipeline(_ *Config, _ *Workspace) []Stage {
 			ID:       2,
 			Name:     "DNS Resolution",
 			Parallel: false,
-			Modules: []Module{
-				{ID: "dnsx", Name: "Dnsx", Run: runDnsx},
-				{ID: "alterx", Name: "Alterx", Optional: true, Run: runAlterx},
-			},
+			Modules:  stage2Mods,
 		},
 		{
 			ID:       3,
@@ -58,12 +85,7 @@ func buildPipeline(_ *Config, _ *Workspace) []Stage {
 			ID:       4,
 			Name:     "Content Discovery",
 			Parallel: true,
-			Modules: []Module{
-				{ID: "gau", Name: "GAU", Run: runGau},
-				{ID: "katana", Name: "Katana", Run: runKatana},
-				{ID: "getjs", Name: "GetJS", Optional: true, Run: runGetJS},
-				{ID: "ffuf", Name: "Ffuf", Optional: true, Run: runFfuf},
-			},
+			Modules:  stage4Mods,
 			PostRun: func(c *Config, w *Workspace) error {
 				n, err := MergeDedup(w.AllURLs, w.HistoricalURLs, w.CrawledURLs)
 				if err == nil {
@@ -76,11 +98,7 @@ func buildPipeline(_ *Config, _ *Workspace) []Stage {
 			ID:       5,
 			Name:     "Vulnerability Analysis",
 			Parallel: true,
-			Modules: []Module{
-				{ID: "nuclei", Name: "Nuclei", Run: runNuclei},
-				{ID: "nuclei-js", Name: "Nuclei JS", Optional: true, Run: runNucleiJS},
-				{ID: "dalfox", Name: "Dalfox", Optional: true, Run: runDalfox},
-			},
+			Modules:  stage5Mods,
 		},
 	}
 }
@@ -126,6 +144,25 @@ func runCmd(ctx context.Context, outFile string, args ...string) (int, error) {
 		return count, ctx.Err()
 	}
 	return count, nil
+}
+
+// headFile copies the first n lines of src into dst.
+func headFile(src, dst string, n int) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	sc := bufio.NewScanner(in)
+	for i := 0; i < n && sc.Scan(); i++ {
+		fmt.Fprintln(out, sc.Text())
+	}
+	return nil
 }
 
 // filterLines reads src, applies filter, writes matching lines to dst.
@@ -361,8 +398,12 @@ func runTlsx(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
 func runGau(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
 	tctx, cancel := withTimeout(ctx, cfg)
 	defer cancel()
-	return runCmd(tctx, ws.HistoricalURLs,
-		FindTool("gau"), "--threads", fmt.Sprintf("%d", cfg.Threads), "--subs", cfg.Target)
+	args := []string{FindTool("gau"), "--threads", fmt.Sprintf("%d", cfg.Threads)}
+	if cfg.Deep {
+		args = append(args, "--subs") // fetch all subdomains (slow, deep mode only)
+	}
+	args = append(args, cfg.Target)
+	return runCmd(tctx, ws.HistoricalURLs, args...)
 }
 
 func runKatana(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
@@ -448,6 +489,16 @@ func runDalfox(ctx context.Context, cfg *Config, ws *Workspace) (int, error) {
 	if !FileExists(urlsFile) {
 		urlsFile = liveURLsInput(cfg, ws)
 	}
+
+	// Cap dalfox input to 500 URLs — scanning 100K+ URLs takes hours.
+	const dalfoxLimit = 500
+	limited := filepath.Join(ws.Vulns, "dalfox_input.txt")
+	if n := CountLines(urlsFile); n > dalfoxLimit {
+		if err := headFile(urlsFile, limited, dalfoxLimit); err == nil {
+			urlsFile = limited
+		}
+	}
+
 	tctx, cancel := withTimeout(ctx, cfg)
 	defer cancel()
 	return runCmd(tctx, ws.XSSHits,

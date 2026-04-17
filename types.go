@@ -13,6 +13,8 @@ type Config struct {
 	NoAI    bool
 	Resume  bool
 	Stage   int
+	Fast    bool // skip slow optional tools: alterx, ffuf, dalfox
+	Deep    bool // enable all tools including slow ones (default when neither flag set)
 }
 
 // Finding is a single result emitted by any module.

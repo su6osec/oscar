@@ -21,6 +21,8 @@ func main() {
 		noAI    = flag.Bool("no-ai", false, "Skip Ollama AI triage")
 		resume  = flag.Bool("resume", false, "Resume a previous scan (skip completed stages)")
 		stage   = flag.Int("stage", 1, "Start from a specific stage (1–5)")
+		fast    = flag.Bool("fast", false, "Fast mode: skip alterx, ffuf, dalfox (~3× faster)")
+		deep    = flag.Bool("deep", false, "Deep mode: enable all tools including slow ones")
 		agent   = flag.Bool("agent", false, "Show MCP / agentic setup guide for Claude, Cursor, etc.")
 		mcp     = flag.Bool("mcp", false, "Alias for -agent")
 		ver     = flag.Bool("v", false, "Show version and exit")
@@ -61,6 +63,8 @@ func main() {
 		NoAI:    *noAI,
 		Resume:  *resume,
 		Stage:   *stage,
+		Fast:    *fast,
+		Deep:    *deep,
 	}
 
 	RunScan(cfg)
@@ -156,6 +160,8 @@ func printUsage() {
 	fmt.Println("  -timeout <n>   Per-module timeout (minutes)        [default: 30]")
 	fmt.Println("  -stage <n>     Start from stage 1–5                [default: 1]")
 	fmt.Println("  -resume        Resume a previous scan")
+	fmt.Println("  -fast          Skip alterx/ffuf/dalfox (~3× faster)")
+	fmt.Println("  -deep          Enable all tools including slow permutation/brute-force")
 
 	fmt.Println()
 	pterm.DefaultSection.Println("Output")
