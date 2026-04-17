@@ -1,20 +1,26 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/pbnjay/memory"
 	"github.com/pterm/pterm"
 )
 
 // toolManifest maps tool names to their go install paths.
+// trufflehog is handled separately (replace-directive issue).
 var toolManifest = map[string]string{
-	// Core pipeline tools
-	"subfinder":   "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
+	// Core pipeline
+	"subfinder":  "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
 	"assetfinder": "github.com/tomnomnom/assetfinder@latest",
 	"dnsx":        "github.com/projectdiscovery/dnsx/cmd/dnsx@latest",
 	"alterx":      "github.com/projectdiscovery/alterx/cmd/alterx@latest",
@@ -27,10 +33,9 @@ var toolManifest = map[string]string{
 	"ffuf":        "github.com/ffuf/ffuf/v2@latest",
 	"nuclei":      "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
 	"dalfox":      "github.com/hahwul/dalfox/v2@latest",
-
-	// Utility tools
-	"anew":        "github.com/tomnomnom/anew@latest",
-	"unfurl":      "github.com/tomnomnom/unfurl@latest",
+	// Utilities
+	"anew":       "github.com/tomnomnom/anew@latest",
+	"unfurl":     "github.com/tomnomnom/unfurl@latest",
 	"waybackurls": "github.com/tomnomnom/waybackurls@latest",
 	"gf":          "github.com/tomnomnom/gf@latest",
 	"qsreplace":   "github.com/tomnomnom/qsreplace@latest",
@@ -45,35 +50,48 @@ var toolManifest = map[string]string{
 	"asnmap":      "github.com/projectdiscovery/asnmap/cmd/asnmap@latest",
 	"notify":      "github.com/projectdiscovery/notify/cmd/notify@latest",
 	"uncover":     "github.com/projectdiscovery/uncover/cmd/uncover@latest",
-	"trufflehog":  "github.com/trufflesecurity/trufflehog/v3@latest",
 	"subjs":       "github.com/lc/subjs@latest",
 }
 
-// RunInstaller installs or updates all tools in the manifest.
+// RunInstaller installs or updates all tools.
+// Note: printBanner() is already called by main() before this.
 func RunInstaller() {
-	printBanner()
+	total := len(toolManifest) + 1 // +1 for trufflehog
 	pterm.DefaultHeader.WithFullWidth().
-		Printf(" OSCAR Installer — %d tools ", len(toolManifest))
+		Printf("  OSCAR Tool Installer  ·  %d tools  ", total)
 	fmt.Println()
 
-	// Install Go tools (parallel, max 4 at a time)
 	installGoTools()
-
-	// Clone SecLists
+	installTrufflehog()
 	installSecLists()
-
-	// Update Nuclei templates
 	updateNucleiTemplates()
-
-	// Check Ollama
 	checkOllama()
 
 	fmt.Println()
-	pterm.Success.Println("Installation complete. Run 'oscar -t <target>' to start scanning.")
+	pterm.DefaultBox.
+		WithTitle("Done").
+		WithTitleTopCenter().
+		Println("All done!  Run:  " + pterm.FgLightCyan.Sprint("oscar -t <target>"))
 }
 
+// ─── Go tools ─────────────────────────────────────────────────────────────────
+
 func installGoTools() {
-	pterm.DefaultSection.Println("Installing Go Tools")
+	pterm.DefaultSection.Println("Go Tools")
+
+	// Sorted names for deterministic display
+	names := make([]string, 0, len(toolManifest))
+	for name := range toolManifest {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	// Progress bar
+	pb, _ := pterm.DefaultProgressbar.
+		WithTotal(len(names)).
+		WithTitle("  Installing").
+		WithRemoveWhenDone(true).
+		Start()
 
 	type result struct {
 		name string
@@ -83,23 +101,23 @@ func installGoTools() {
 	jobs := make(chan struct{ name, path string }, len(toolManifest))
 	results := make(chan result, len(toolManifest))
 
-	// Worker pool with 4 concurrent installs
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
-				cmd := exec.Command("go", "install", "-v", job.path)
-				cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+				cmd := exec.Command("go", "install", job.path)
+				var stderr bytes.Buffer
+				cmd.Stderr = &stderr
 				err := cmd.Run()
 				results <- result{name: job.name, err: err}
 			}
 		}()
 	}
 
-	for name, path := range toolManifest {
-		jobs <- struct{ name, path string }{name, path}
+	for _, name := range names {
+		jobs <- struct{ name, path string }{name, toolManifest[name]}
 	}
 	close(jobs)
 
@@ -108,111 +126,249 @@ func installGoTools() {
 		close(results)
 	}()
 
-	success, failed := 0, 0
+	// Collect all results
+	resultMap := make(map[string]error)
 	for r := range results {
-		if r.err != nil {
-			pterm.Warning.Printf("  %-20s  ✗ failed\n", r.name)
-			failed++
+		resultMap[r.name] = r.err
+		pb.Increment()
+	}
+	pb.Stop()
+
+	// Display in a 3-column grid, sorted
+	var failed []string
+	colW := 20
+	cols := 3
+	for i, name := range names {
+		if resultMap[name] == nil {
+			fmt.Printf("  %s%-*s", pterm.FgGreen.Sprint("✓ "), colW, name)
 		} else {
-			pterm.FgGreen.Printf("  %-20s  ✓\n", r.name)
-			success++
+			fmt.Printf("  %s%-*s", pterm.FgRed.Sprint("✗ "), colW, name)
+			failed = append(failed, name)
+		}
+		if (i+1)%cols == 0 || i == len(names)-1 {
+			fmt.Println()
 		}
 	}
 
-	fmt.Printf("\n  %d installed, %d failed\n", success, failed)
+	fmt.Println()
+	if len(failed) > 0 {
+		pterm.Warning.Printf("Failed (%d): %s\n", len(failed), strings.Join(failed, ", "))
+		pterm.Info.Println("Re-run 'oscar -up' to retry, or install manually with 'go install <path>'")
+	} else {
+		pterm.Success.Printf("All %d Go tools installed\n", len(names))
+	}
 }
+
+// ─── Trufflehog (special case) ────────────────────────────────────────────────
+
+func installTrufflehog() {
+	pterm.DefaultSection.Println("Trufflehog (Secret Scanner)")
+
+	if _, err := exec.LookPath("trufflehog"); err == nil {
+		pterm.Success.Println("trufflehog already installed")
+		return
+	}
+
+	// trufflehog can't be installed via `go install` (replace directives in go.mod).
+	// Use the official install script instead.
+	pterm.Info.Println("Installing via official install script...")
+
+	spinner, _ := pterm.DefaultSpinner.
+		WithRemoveWhenDone(false).
+		Start("Downloading trufflehog...")
+
+	resp, err := http.Get("https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh")
+	if err != nil {
+		spinner.Fail("Download failed — install manually:")
+		fmt.Println("  curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin")
+		return
+	}
+	defer resp.Body.Close()
+
+	// Run: curl … | sh -s -- -b /usr/local/bin
+	curlCmd := exec.Command("curl", "-sSfL",
+		"https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh")
+	shCmd := exec.Command("sh", "-s", "--", "-b", "/usr/local/bin")
+
+	pipe, _ := curlCmd.StdoutPipe()
+	shCmd.Stdin = pipe
+	shCmd.Stdout = os.Stdout
+	shCmd.Stderr = os.Stderr
+
+	_ = curlCmd.Start()
+	_ = shCmd.Start()
+	_ = curlCmd.Wait()
+
+	if err := shCmd.Wait(); err != nil {
+		spinner.Fail(fmt.Sprintf("trufflehog install failed: %v", err))
+		return
+	}
+	spinner.Success("trufflehog installed")
+}
+
+// ─── SecLists ─────────────────────────────────────────────────────────────────
 
 func installSecLists() {
 	pterm.DefaultSection.Println("SecLists Wordlists")
 	secPath := FindSecLists()
 
-	if _, err := os.Stat(secPath); err == nil {
-		pterm.Success.Printf("SecLists found at: %s\n", secPath)
+	if info, err := os.Stat(secPath); err == nil && info.IsDir() {
+		pterm.Success.Printf("Already present: %s\n", secPath)
 		return
 	}
 
-	pterm.Info.Printf("Cloning SecLists to %s (this may take a while)...\n", secPath)
-	spinner, _ := pterm.DefaultSpinner.Start("Cloning SecLists...")
+	pterm.Info.Printf("Cloning to %s  (this may take a few minutes)...\n", secPath)
+	spinner, _ := pterm.DefaultSpinner.
+		WithRemoveWhenDone(false).
+		Start("Cloning SecLists")
 
 	cmd := exec.Command("git", "clone", "--depth=1",
 		"https://github.com/danielmiessler/SecLists.git", secPath)
+	cmd.Stdout, cmd.Stderr = nil, nil
 	if err := cmd.Run(); err != nil {
-		spinner.Fail(fmt.Sprintf("SecLists clone failed: %v", err))
-		pterm.Info.Println("Install manually: git clone https://github.com/danielmiessler/SecLists.git ~/SecLists")
+		spinner.Fail("Clone failed")
+		fmt.Printf("  Manual install: git clone --depth=1 https://github.com/danielmiessler/SecLists.git %s\n", secPath)
 		return
 	}
-	spinner.Success(fmt.Sprintf("SecLists installed at: %s", secPath))
+	spinner.Success(fmt.Sprintf("SecLists ready at %s", secPath))
 }
+
+// ─── Nuclei templates ─────────────────────────────────────────────────────────
 
 func updateNucleiTemplates() {
 	pterm.DefaultSection.Println("Nuclei Templates")
 
-	if _, err := exec.LookPath(FindTool("nuclei")); err != nil {
+	nucleiBin := FindTool("nuclei")
+	if _, err := exec.LookPath(nucleiBin); err != nil {
 		pterm.Warning.Println("nuclei not found — skipping template update")
 		return
 	}
 
-	spinner, _ := pterm.DefaultSpinner.Start("Updating Nuclei templates...")
-	cmd := exec.Command(FindTool("nuclei"), "-update-templates")
+	pterm.Info.Print("Updating templates...  ")
+	cmd := exec.Command(nucleiBin, "-update-templates", "-disable-update-check")
+	cmd.Stdout, cmd.Stderr = nil, nil
 	if err := cmd.Run(); err != nil {
-		spinner.Warning("Nuclei template update failed (non-fatal)")
+		pterm.FgYellow.Println("update failed (non-fatal)")
 		return
 	}
-	spinner.Success("Nuclei templates updated")
+	pterm.FgGreen.Println("✓ done")
 }
+
+// ─── Ollama / AI engine ───────────────────────────────────────────────────────
 
 func checkOllama() {
 	pterm.DefaultSection.Println("AI Engine (Ollama)")
 
-	if _, err := exec.LookPath("ollama"); err != nil {
-		pterm.Info.Println("Ollama not found. Install from https://ollama.com for AI-powered reporting.")
-		pterm.Info.Println("  Quick install: curl -fsSL https://ollama.com/install.sh | sh")
+	ollamaPath, err := exec.LookPath("ollama")
+	if err != nil {
+		pterm.Warning.Println("Ollama is not installed.")
+		pterm.Info.Println("  Install:  curl -fsSL https://ollama.com/install.sh | sh")
+		pterm.Info.Println("  Then re-run 'oscar -up' to pull the optimal model.")
 		return
 	}
+	pterm.FgGray.Printf("  Found: %s\n", ollamaPath)
 
+	// Detect optimal model
 	model := SelectAIModel()
-	pterm.Info.Printf("Optimal model for your hardware: %s\n", model)
+	ramMB := memory.TotalMemory() / (1024 * 1024)
+	pterm.Info.Printf("  System RAM: ~%d MB  →  model: %s\n", ramMB, pterm.FgLightCyan.Sprint(model))
 
-	// Check if model is already pulled
-	cmd := exec.Command("ollama", "list")
-	out, _ := cmd.Output()
-	if strings.Contains(string(out), strings.Split(model, ":")[0]) {
-		pterm.Success.Printf("Model %s is already available\n", model)
+	// Check if daemon is reachable
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://localhost:11434/api/tags")
+	if err != nil {
+		pterm.Warning.Println("  Ollama daemon is not running.")
+		pterm.Info.Println("  Start it:      ollama serve")
+		pterm.Info.Printf("  Pull model:    ollama pull %s\n", model)
+		return
+	}
+	resp.Body.Close()
+
+	// Check if model already downloaded
+	listOut, _ := exec.Command("ollama", "list").Output()
+	modelBase := strings.Split(model, ":")[0]
+	if strings.Contains(string(listOut), modelBase) {
+		pterm.Success.Printf("  Model %s already downloaded\n", model)
 		return
 	}
 
-	spinner, _ := pterm.DefaultSpinner.Start(fmt.Sprintf("Pulling %s (this may take a while)...", model))
+	// Pull the model
+	pterm.Info.Printf("  Pulling %s  (grab a coffee, this may take a while)...\n", model)
 	pullCmd := exec.Command("ollama", "pull", model)
+	pullCmd.Stdout = os.Stdout
+	pullCmd.Stderr = os.Stderr
 	if err := pullCmd.Run(); err != nil {
-		spinner.Warning(fmt.Sprintf("Could not pull %s: %v", model, err))
+		pterm.Warning.Printf("  Pull failed: %v\n", err)
+		pterm.Info.Printf("  Manual pull: ollama pull %s\n", model)
 		return
 	}
-	spinner.Success(fmt.Sprintf("Model %s ready", model))
+	pterm.Success.Printf("  Model %s ready\n", model)
 }
 
-// printMCPConfig outputs the MCP configuration for Claude/Cursor integration.
-func printMCPConfig() {
+
+// ─── Agent / MCP config ───────────────────────────────────────────────────────
+
+// printAgentSetup prints clear, step-by-step MCP configuration instructions.
+func printAgentSetup() {
+	oscarBin := resolveOscarBinary()
+
+	pterm.DefaultHeader.WithFullWidth().Println("  OSCAR  ·  Agentic MCP Setup  ")
+	fmt.Println()
+
+	pterm.DefaultSection.Println("Step 1 — Make sure OSCAR is in your PATH")
+	fmt.Printf("  Binary location: %s\n\n", pterm.FgLightCyan.Sprint(oscarBin))
+
+	pterm.DefaultSection.Println("Step 2 — Add this block to your AI tool config")
+
+	config := fmt.Sprintf(`{
+  "mcpServers": {
+    "oscar": {
+      "command": "%s",
+      "args": ["-mcp-server"]
+    }
+  }
+}`, oscarBin)
+
+	pterm.DefaultBox.WithTitle("MCP Config JSON").Println(config)
+
+	pterm.DefaultSection.Println("Step 3 — Config file locations")
+
+	home, _ := os.UserHomeDir()
+
+	locations := []struct{ label, path string }{
+		{"Claude Desktop (Linux/Mac)", filepath.Join(home, ".config", "claude", "claude_desktop_config.json")},
+		{"Claude Desktop (Windows)", filepath.Join(home, "AppData", "Roaming", "Claude", "claude_desktop_config.json")},
+		{"Cursor", filepath.Join(home, ".cursor", "mcp.json")},
+		{"Windsurf", filepath.Join(home, ".codeium", "windsurf", "mcp_config.json")},
+	}
+
+	for _, loc := range locations {
+		exists := ""
+		if _, err := os.Stat(loc.path); err == nil {
+			exists = pterm.FgGreen.Sprint(" ← exists")
+		}
+		fmt.Printf("  %-28s %s%s\n", loc.label, pterm.FgGray.Sprint(loc.path), exists)
+	}
+
+	fmt.Println()
+	pterm.Info.Println("Paste the JSON above into the mcpServers section of whichever file applies, then restart your AI app.")
+}
+
+func resolveOscarBinary() string {
+	// 1. Check GOPATH/bin/oscar
 	gopath := os.Getenv("GOPATH")
 	if gopath == "" {
 		home, _ := os.UserHomeDir()
 		gopath = filepath.Join(home, "go")
 	}
-	oscarBin := filepath.Join(gopath, "bin", "oscar")
-	if _, err := os.Stat(oscarBin); err != nil {
-		oscarBin = "oscar"
+	candidate := filepath.Join(gopath, "bin", "oscar")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
 	}
-
-	pterm.DefaultHeader.WithFullWidth().Println(" OSCAR MCP Configuration ")
-	fmt.Println()
-	pterm.Info.Println("Add this to your claude_desktop_config.json or Cursor settings:")
-	fmt.Println()
-	fmt.Printf(`{
-  "mcpServers": {
-    "oscar": {
-      "command": "%s",
-      "args": ["--mcp"]
-    }
-  }
-}
-`, oscarBin)
+	// 2. Check PATH
+	if p, err := exec.LookPath("oscar"); err == nil {
+		return p
+	}
+	// 3. Fallback
+	return "oscar"
 }

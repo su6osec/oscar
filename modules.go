@@ -16,7 +16,7 @@ import (
 
 // ─── Pipeline Builder ──────────────────────────────────────────────────────────
 
-func buildPipeline(cfg *Config, ws *Workspace) []Stage {
+func buildPipeline(_ *Config, _ *Workspace) []Stage {
 	return []Stage{
 		{
 			ID:       1,
