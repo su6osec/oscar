@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -535,28 +536,78 @@ func printAgentSetup() {
 			}
 		}
 
-		fmt.Println()
-		patched := 0
+		// Collect files that actually need patching
+		var toPatch []aiToolConfig
 		for _, cfg := range found {
-			if configHasOscar(cfg.Path) {
-				continue
-			}
-			if err := patchMCPConfig(cfg.Path, oscarBin); err != nil {
-				pterm.Warning.Printf("  Auto-patch failed for %s: %v\n", cfg.Name, err)
-				pterm.Info.Printf("  Add manually to: %s\n", cfg.Path)
-			} else {
-				pterm.Success.Printf("  Patched: %s\n", cfg.Path)
-				patched++
+			if !configHasOscar(cfg.Path) {
+				toPatch = append(toPatch, cfg)
 			}
 		}
-		if patched > 0 {
+
+		if len(toPatch) == 0 {
 			fmt.Println()
-			pterm.Info.Println("Restart your AI app to load the new MCP server.")
+			pterm.Success.Println("All detected configs already have the OSCAR MCP entry.")
+		} else {
+			fmt.Println()
+
+			// AI explanation via Ollama (optional — skip if not running)
+			if OllamaAvailable() {
+				spinner, _ := pterm.DefaultSpinner.Start("Asking AI to explain the changes...")
+				explanation, err := OllamaGenerate(SelectAIModel(), buildMCPExplainPrompt(oscarBin, toPatch))
+				if err == nil && explanation != "" {
+					spinner.Success("AI explanation ready")
+					fmt.Println()
+					pterm.DefaultBox.WithTitle("AI — What will happen").Println(strings.TrimSpace(explanation))
+					fmt.Println()
+				} else {
+					spinner.Warning("AI explanation unavailable — proceeding without it")
+				}
+			}
+
+			// Per-file consent + patch
+			patched := 0
+			reader := bufio.NewReader(os.Stdin)
+			for _, cfg := range toPatch {
+				fmt.Printf("  Patch %s\n  %s\n  Apply? [y/N] ",
+					pterm.FgLightCyan.Sprint(cfg.Name),
+					pterm.FgGray.Sprint(cfg.Path))
+				line, _ := reader.ReadString('\n')
+				line = strings.TrimSpace(strings.ToLower(line))
+				if line != "y" && line != "yes" {
+					pterm.Info.Printf("  Skipped: %s\n", cfg.Name)
+					continue
+				}
+				if err := patchMCPConfig(cfg.Path, oscarBin); err != nil {
+					pterm.Warning.Printf("  Patch failed for %s: %v\n", cfg.Name, err)
+					pterm.Info.Printf("  Add manually to: %s\n", cfg.Path)
+				} else {
+					pterm.Success.Printf("  Patched: %s\n", cfg.Path)
+					patched++
+				}
+			}
+			if patched > 0 {
+				fmt.Println()
+				pterm.Info.Println("Restart your AI app to load the new MCP server.")
+			}
 		}
 	}
 
 	fmt.Println()
 	pterm.Info.Printf("Docs: https://github.com/su6osec/oscar\n")
+}
+
+// buildMCPExplainPrompt creates a prompt asking the AI to explain the MCP changes.
+func buildMCPExplainPrompt(oscarBin string, toPatch []aiToolConfig) string {
+	var fileList strings.Builder
+	for _, c := range toPatch {
+		fileList.WriteString(fmt.Sprintf("  - %s (%s)\n", c.Name, c.Path))
+	}
+	return fmt.Sprintf(`You are a helpful security tool assistant. In one short paragraph (3-5 sentences), explain to a user what MCP (Model Context Protocol) is, why adding OSCAR as an MCP server is useful for bug bounty hunting, and what files will be changed. Be concise and friendly.
+
+OSCAR binary: %s
+Config files that will be patched:
+%s
+Keep the explanation under 6 sentences and avoid technical jargon.`, oscarBin, fileList.String())
 }
 
 // configHasOscar returns true if the JSON file already contains an "oscar"
