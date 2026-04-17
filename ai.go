@@ -25,7 +25,7 @@ func SelectAIModel() string {
 	case totalMB < 4096:
 		return "qwen2.5:0.5b"
 	case totalMB < 8192:
-		return "phi3.5:mini"
+		return "phi3.5"
 	case totalMB < 16384:
 		return "llama3.2:3b"
 	default:
