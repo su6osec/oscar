@@ -13,7 +13,6 @@ import (
 
 	"github.com/pbnjay/memory"
 	"github.com/pterm/pterm"
-	"golang.org/x/term"
 )
 
 const ollamaBase = "http://localhost:11434"
@@ -183,10 +182,6 @@ Provide:
 4. Quick wins (easy vulnerabilities to confirm)
 
 Be concise and technical. Focus on actionable insights.`, target, data)
-}
-
-func isTerminal(f *os.File) bool {
-	return term.IsTerminal(int(f.Fd()))
 }
 
 func readFirstN(path string, n int) []string {

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -129,6 +130,7 @@ func runCmd(ctx context.Context, outFile string, args ...string) (int, error) {
 	}
 	defer f.Close()
 
+	ctr, _ := ctx.Value(liveCountKey{}).(*int64)
 	count := 0
 	sc := bufio.NewScanner(pipe)
 	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
@@ -137,6 +139,9 @@ func runCmd(ctx context.Context, outFile string, args ...string) (int, error) {
 		if line != "" {
 			f.WriteString(line + "\n") //nolint:errcheck
 			count++
+			if ctr != nil {
+				atomic.AddInt64(ctr, 1)
+			}
 		}
 	}
 
