@@ -1,0 +1,19 @@
+# Build output
+oscar
+oscar.exe
+
+# Scan outputs and reports
+reports/
+dnsx.txt
+wordlist.txt
+resume.cfg
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Temp files
+*.tmp
+*.log
+/tmp/
